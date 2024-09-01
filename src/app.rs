@@ -1,3 +1,7 @@
+use std::ops::DerefMut;
+
+use serde::Deserialize;
+
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
@@ -23,8 +27,14 @@ pub struct TemplateApp {
     #[serde(skip)] // This how you opt-out of serialization of a field
     safe: bool,
     dupes_db: bool,
+    my_panel: Panel,
 
 }
+
+#[derive(PartialEq, serde::Serialize, Deserialize)]
+enum Panel { Duplicates, Order, Tags, Find }
+
+
 
 impl Default for TemplateApp {
     fn default() -> Self {
@@ -45,7 +55,8 @@ impl Default for TemplateApp {
             order: TJF_DEFAULT_ORDER.to_owned(),
             tags:"blah blah blah\nhooray".to_owned(),
             safe: true,
-            dupes_db: false
+            dupes_db: false,
+            my_panel: Panel::Duplicates,
         }
     }
 }
@@ -77,24 +88,30 @@ impl eframe::App for TemplateApp {
         // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
 
-        // egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
-        //     // The top panel is often a good place for a menu bar:
+        egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
+            // The top panel is often a good place for a menu bar:
 
-        //     egui::menu::bar(ui, |ui| {
-        //         // NOTE: no File->Quit on web pages!
-        //         let is_web = cfg!(target_arch = "wasm32");
-        //         if !is_web {
-        //             ui.menu_button("File", |ui| {
-        //                 if ui.button("Quit").clicked() {
-        //                     ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-        //                 }
-        //             });
-        //             ui.add_space(16.0);
-        //         }
+            egui::menu::bar(ui, |ui| {
+                // NOTE: no File->Quit on web pages!
+                // let is_web = cfg!(target_arch = "wasm32");
+                // if !is_web {
+                //     ui.menu_button("File", |ui| {
+                //         if ui.button("Quit").clicked() {
+                //             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                //         }
+                //     });
+                //     ui.add_space(16.0);
+                // }
 
-        //         egui::widgets::global_dark_light_mode_buttons(ui);
-        //     });
-        // });
+                // egui::widgets::global_dark_light_mode_buttons(ui);
+                
+                ui.selectable_value(&mut self.my_panel, Panel::Duplicates, "Duplicate Filename Search",);
+                ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
+                ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
+                ui.selectable_value(&mut self.my_panel, Panel::Find, "Find/Replace Text in database",);
+
+            });
+        });
 
         egui::CentralPanel::default().show(ctx, |ui| {
             // The central panel the region left after adding TopPanel's and SidePanel's
@@ -113,21 +130,102 @@ impl eframe::App for TemplateApp {
             });
             ui.separator();
 
-            ui.heading("Find and Replace");
+            match self.my_panel {
+                Panel::Find => {
+                    ui.heading("Find and Replace");
+        
+                    ui.horizontal(|ui| {
+                        ui.label("Find Text");
+                        ui.text_edit_singleline(&mut self.find);
+                        ui.label("in Column: ");
+                        ui.text_edit_singleline(&mut self.column);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Replace: ");
+                        ui.text_edit_singleline(&mut self.replace);
+                    });
+        
+                    if ui.button("Process").clicked() {
+                        smreplace();
+                    }
+                }
+                Panel::Duplicates => {
+                    ui.heading("Search for Duplicate Records");
+        
+                    ui.checkbox(&mut self.basic_search, "Basic Duplicate Filename Search");
+                    // ui.style_mut().spacing.indent = 5.0;
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        ui.checkbox(&mut self.group_search, "Group Duplicate Filename Search by: ");
+                        ui.text_edit_singleline(&mut self.group_column);
+                    });
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
+                    });
+                    ui.horizontal(|ui| {});
+                    ui.checkbox(&mut self.tags_search, "Plug-In Tags Search");
+                    ui.checkbox(&mut self.deep_dive_search, "Deep Dive Duplicates Search");
+                    ui.horizontal(|ui| {
+                        ui.checkbox(&mut self.compare_db, "Compare against database: ");
+                        ui.text_edit_singleline(&mut self.compare_db_path);
+                        if ui.button("Open file…").clicked() {
+                            if let Some(path) = rfd::FileDialog::new().pick_file() {
+                                self.compare_db_path = path.display().to_string();
+                                // self.db_path = Some(path.display().to_string());
+                            }
+                        }
+                    });
+                    ui.horizontal(|ui| {});
+                    ui.checkbox(&mut self.safe, "Create Safety Database of Thinned Records");
+                    ui.checkbox(&mut self.dupes_db, "Create Database of Duplicate Records");
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Search for Duplicates").clicked() {
+                            gather_dupicates();
+                        }
+                        if ui.button("Remove Duplicates").clicked() {
+                            remove_dupicates();
+                        }
+                    });
 
-            ui.horizontal(|ui| {
-                ui.label("Find Text");
-                ui.text_edit_singleline(&mut self.find);
-                ui.label("in Column: ");
-                ui.text_edit_singleline(&mut self.column);
-            });
-            ui.horizontal(|ui| {
-                ui.label("Replace: ");
-                ui.text_edit_singleline(&mut self.replace);
-            });
+                }
+                Panel::Order => {
+                    ui.columns(1, |columns| {
+                        columns[0].heading("Duplicate Filename Keeper Priority Order:");
+                        columns[0].text_edit_multiline(&mut self.order);
+                        if columns[0].button("Default Order").clicked() {
+                            self.order = TJF_DEFAULT_ORDER.to_owned();
+                        }
+                        // columns[1].heading("Protools Plugin Tag Search:");
+                        // columns[1].text_edit_multiline(&mut self.tags);
+                        // if columns[1].button("Default Tags").clicked() {
+                        //     self.tags = DEFAULT_TAGS.to_owned();
+                        // }
+        
+                    });
+                    
+                }
 
-            if ui.button("Process").clicked() {
-                smreplace();
+                Panel::Tags => {
+                    ui.columns(1, |columns| {
+                        // columns[0].heading("Duplicate Filename Keeper Priority Order:");
+                        // columns[0].text_edit_multiline(&mut self.order);
+                        // if columns[0].button("Default Order").clicked() {
+                        //     self.order = TJF_DEFAULT_ORDER.to_owned();
+                        // }
+                        columns[0].heading("Protools Plugin Tag Search:");
+                        columns[0].text_edit_multiline(&mut self.tags);
+                        if columns[0].button("Default Tags").clicked() {
+                            self.tags = DEFAULT_TAGS.to_owned();
+                        }
+        
+                    });
+                    
+                }
+
+
+
             }
 
 
@@ -135,62 +233,25 @@ impl eframe::App for TemplateApp {
 
 
 
-            ui.separator();
-
-            ui.heading("Search for Duplicate Records");
-
-            ui.checkbox(&mut self.basic_search, "Basic Duplicate Filename Search");
-            // ui.style_mut().spacing.indent = 5.0;
-            ui.horizontal(|ui| {
-                ui.add_space(24.0);
-                ui.checkbox(&mut self.group_search, "Group Duplicate Filename Search by: ");
-                ui.text_edit_singleline(&mut self.group_column);
-            });
-            ui.horizontal(|ui| {
-                ui.add_space(24.0);
-                ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?").small();
-            });
-            ui.horizontal(|ui| {});
-            ui.checkbox(&mut self.tags_search, "Plug-In Tags Search");
-            ui.checkbox(&mut self.deep_dive_search, "Deep Dive Duplicates Search");
-            ui.horizontal(|ui| {
-                ui.checkbox(&mut self.compare_db, "Compare against database: ");
-                ui.text_edit_singleline(&mut self.compare_db_path);
-                if ui.button("Open file…").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        self.compare_db_path = path.display().to_string();
-                        // self.db_path = Some(path.display().to_string());
-                    }
-                }
-            });
-            ui.horizontal(|ui| {});
-            ui.checkbox(&mut self.safe, "Create Safety Database of Thinned Records");
-            ui.checkbox(&mut self.dupes_db, "Create Database of Duplicate Records");
-            ui.separator();
-            ui.horizontal(|ui| {
-                if ui.button("Search for Duplicates").clicked() {
-                    gather_dupicates();
-                }
-                if ui.button("Remove Duplicates").clicked() {
-                    remove_dupicates();
-                }
-            });
 
             ui.separator();
 
-            ui.columns(2, |columns| {
-                columns[0].heading("Duplicate Filename Keeper Priority Order:");
-                columns[0].text_edit_multiline(&mut self.order);
-                if columns[0].button("Default Order").clicked() {
-                    self.order = TJF_DEFAULT_ORDER.to_owned();
-                }
-                columns[1].heading("Protools Plugin Tag Search:");
-                columns[1].text_edit_multiline(&mut self.tags);
-                if columns[1].button("Default Tags").clicked() {
-                    self.tags = DEFAULT_TAGS.to_owned();
-                }
 
-            });
+            ui.separator();
+
+            // ui.columns(2, |columns| {
+            //     columns[0].heading("Duplicate Filename Keeper Priority Order:");
+            //     columns[0].text_edit_multiline(&mut self.order);
+            //     if columns[0].button("Default Order").clicked() {
+            //         self.order = TJF_DEFAULT_ORDER.to_owned();
+            //     }
+            //     columns[1].heading("Protools Plugin Tag Search:");
+            //     columns[1].text_edit_multiline(&mut self.tags);
+            //     if columns[1].button("Default Tags").clicked() {
+            //         self.tags = DEFAULT_TAGS.to_owned();
+            //     }
+
+            // });
 
             // ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
             // if ui.button("Increment").clicked() {
@@ -215,6 +276,10 @@ impl eframe::App for TemplateApp {
 fn gather_dupicates() {}
 fn remove_dupicates() {}
 fn smreplace() {}
+
+
+
+
 
 // fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
 //     ui.horizontal(|ui| {
