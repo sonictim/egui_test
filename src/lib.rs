@@ -2,7 +2,3 @@
 
 mod app;
 pub use app::TemplateApp;
-
-
-fn gather_dupicates() {}
-fn remove_dupicates() {}

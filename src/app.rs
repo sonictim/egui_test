@@ -1,4 +1,5 @@
 use std::ops::DerefMut;
+use rusqlite::{Connection, Result};
 
 use serde::Deserialize;
 
@@ -7,7 +8,9 @@ use serde::Deserialize;
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
     // Example stuff:
-    db_path: String,
+    db_path: Option<String>,
+    total_records: usize,
+    columns: Vec<String>,
     find: String,
     replace: String,
     column: String,
@@ -40,7 +43,9 @@ impl Default for TemplateApp {
     fn default() -> Self {
         Self {
             // Example stuff:
-            db_path: String::new(),
+            db_path: None,
+            total_records: 0,
+            columns: Vec::new(),
             find: String::new(),
             replace: String::new(),
             column: "Filepath".to_owned(),
@@ -53,7 +58,7 @@ impl Default for TemplateApp {
             compare_db: false,
             compare_db_path: String::new(),
             order: TJF_DEFAULT_ORDER.to_owned(),
-            tags:"blah blah blah\nhooray".to_owned(),
+            tags: DEFAULT_TAGS.to_owned(),
             safe: true,
             dupes_db: false,
             my_panel: Panel::Duplicates,
@@ -91,42 +96,42 @@ impl eframe::App for TemplateApp {
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
 
+            ui.horizontal(|ui| {
+                // ui.text_edit_singleline(&mut self.db_path);
+                ui.heading("Target Database: ");
+                if ui.button("Open Databse").clicked() {
+                    self.db_path = open_db();
+                    if let Some(path) = self.db_path.clone() {
+                        self.total_records = get_db_size(path.clone());
+                        self.columns = get_columns(path);
+                    }
+                }
+            });
+            if self.db_path.is_none() {return;}
+            if let Some(path) = &self.db_path {
+                ui.label(path);
+            }
+            if self.total_records > 0 {
+                ui.label(format!("{} total records found in database", self.total_records));
+                // ui.horizontal(|ui| {
+                //     ui.label(self.total_records.to_string());
+                //     ui.label(" total records found in database");
+                    
+                // });
+            }
+        });
+            
+            egui::CentralPanel::default().show(ctx, |ui| {
+            if self.db_path.is_none() {return;}
+            // The central panel the region left after adding TopPanel's and SidePanel's
+            // ui.heading("SMDB Companion");
             egui::menu::bar(ui, |ui| {
-                // NOTE: no File->Quit on web pages!
-                // let is_web = cfg!(target_arch = "wasm32");
-                // if !is_web {
-                //     ui.menu_button("File", |ui| {
-                //         if ui.button("Quit").clicked() {
-                //             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
-                //         }
-                //     });
-                //     ui.add_space(16.0);
-                // }
-
-                // egui::widgets::global_dark_light_mode_buttons(ui);
                 
                 ui.selectable_value(&mut self.my_panel, Panel::Duplicates, "Duplicate Filename Search",);
                 ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
                 ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
                 ui.selectable_value(&mut self.my_panel, Panel::Find, "Find/Replace Text in database",);
-
-            });
-        });
-
-        egui::CentralPanel::default().show(ctx, |ui| {
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            // ui.heading("SMDB Companion");
-
-            ui.horizontal(|ui| {
-                ui.heading("Target Database: ");
-                ui.text_edit_singleline(&mut self.db_path);
-                if ui.button("Open file…").clicked() {
-                    if let Some(path) = rfd::FileDialog::new().pick_file() {
-                        self.db_path = path.display().to_string();
-                        // self.db_path = Some(path.display().to_string());
-                    }
-                }
-
+    
             });
             ui.separator();
 
@@ -138,7 +143,14 @@ impl eframe::App for TemplateApp {
                         ui.label("Find Text");
                         ui.text_edit_singleline(&mut self.find);
                         ui.label("in Column: ");
-                        ui.text_edit_singleline(&mut self.column);
+                        // ui.text_edit_singleline(&mut self.column);
+                        egui::ComboBox::from_label("in Column: ")
+                            .selected_text(format!("{}", self.column))
+                            .show_ui(ui, |ui| {
+                                for col in &self.columns {
+                                    ui.selectable_value(&mut self.column, col.to_string(), format!("{col}"));
+                                }
+                        });
                     });
                     ui.horizontal(|ui| {
                         ui.label("Replace: ");
@@ -197,11 +209,7 @@ impl eframe::App for TemplateApp {
                         if columns[0].button("Default Order").clicked() {
                             self.order = TJF_DEFAULT_ORDER.to_owned();
                         }
-                        // columns[1].heading("Protools Plugin Tag Search:");
-                        // columns[1].text_edit_multiline(&mut self.tags);
-                        // if columns[1].button("Default Tags").clicked() {
-                        //     self.tags = DEFAULT_TAGS.to_owned();
-                        // }
+                   
         
                     });
                     
@@ -209,11 +217,7 @@ impl eframe::App for TemplateApp {
 
                 Panel::Tags => {
                     ui.columns(1, |columns| {
-                        // columns[0].heading("Duplicate Filename Keeper Priority Order:");
-                        // columns[0].text_edit_multiline(&mut self.order);
-                        // if columns[0].button("Default Order").clicked() {
-                        //     self.order = TJF_DEFAULT_ORDER.to_owned();
-                        // }
+                     
                         columns[0].heading("Protools Plugin Tag Search:");
                         columns[0].text_edit_multiline(&mut self.tags);
                         if columns[0].button("Default Tags").clicked() {
@@ -228,47 +232,6 @@ impl eframe::App for TemplateApp {
 
             }
 
-
-
-
-
-
-
-            ui.separator();
-
-
-            ui.separator();
-
-            // ui.columns(2, |columns| {
-            //     columns[0].heading("Duplicate Filename Keeper Priority Order:");
-            //     columns[0].text_edit_multiline(&mut self.order);
-            //     if columns[0].button("Default Order").clicked() {
-            //         self.order = TJF_DEFAULT_ORDER.to_owned();
-            //     }
-            //     columns[1].heading("Protools Plugin Tag Search:");
-            //     columns[1].text_edit_multiline(&mut self.tags);
-            //     if columns[1].button("Default Tags").clicked() {
-            //         self.tags = DEFAULT_TAGS.to_owned();
-            //     }
-
-            // });
-
-            // ui.add(egui::Slider::new(&mut self.value, 0.0..=10.0).text("value"));
-            // if ui.button("Increment").clicked() {
-            //     self.value += 1.0;
-            // }
-
-            // ui.separator();
-
-            // ui.add(egui::github_link_file!(
-            //     "https://github.com/emilk/eframe_template/blob/main/",
-            //     "Source code."
-            // ));
-
-            // ui.with_layout(egui::Layout::bottom_up(egui::Align::LEFT), |ui| {
-            //     powered_by_egui_and_eframe(ui);
-            //     egui::warn_if_debug_build(ui);
-            // });
         });
     }
 }
@@ -277,23 +240,40 @@ fn gather_dupicates() {}
 fn remove_dupicates() {}
 fn smreplace() {}
 
+fn open_db() -> Option<String> {
+    if let Some(path) = rfd::FileDialog::new().pick_file() {
+        let db_path = path.display().to_string();
+        if db_path.ends_with(".sqlite") {return Some(db_path);}
+    }    
+    None
+}
+
+fn get_db_size(db_path: String) -> usize {
+    let conn = Connection::open(db_path).unwrap();
+     let count: usize = conn.query_row(
+         "SELECT COUNT(*) FROM justinmetadata",
+         [],
+         |row| row.get(0) 
+     ).unwrap();
+     count
+}
+
+fn get_columns(db_path: String) -> Vec<String> {
+    let conn = Connection::open(db_path).unwrap();
+    let mut stmt = conn.prepare("PRAGMA table_info(justinmetadata);").unwrap();
+
+    // Execute the query and collect the column names into a Vec<String>
+    let column_names: Vec<String> = stmt.query_map([], |row| {
+        Ok(row.get::<_, String>(1)?) // The 1st index corresponds to the "name" column
+    }).unwrap()
+    .filter_map(Result::ok) // Filter out any errors
+    .collect();
+
+    column_names
+}
 
 
 
-
-// fn powered_by_egui_and_eframe(ui: &mut egui::Ui) {
-//     ui.horizontal(|ui| {
-//         ui.spacing_mut().item_spacing.x = 0.0;
-//         ui.label("Powered by ");
-//         ui.hyperlink_to("egui", "https://github.com/emilk/egui");
-//         ui.label(" and ");
-//         ui.hyperlink_to(
-//             "eframe",
-//             "https://github.com/emilk/egui/tree/master/crates/eframe",
-//         );
-//         ui.label(".");
-//     });
-// }
 
 const TJF_DEFAULT_ORDER: &str = r#"CASE WHEN pathname LIKE '%TJF RECORDINGS%' THEN 0 ELSE 1 END ASC
 CASE WHEN pathname LIKE '%LIBRARIES%' THEN 0 ELSE 1 END ASC
