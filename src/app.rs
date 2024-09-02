@@ -1,5 +1,7 @@
 use std::ops::DerefMut;
 use egui::RadioButton;
+use eframe::egui::{self, Layout, Align, Align2};
+
 use rusqlite::{Connection, Result};
 
 use serde::Deserialize;
@@ -67,7 +69,7 @@ impl Default for TemplateApp {
             tags: DEFAULT_TAGS_VEC.map(|s| s.to_string()).to_vec(),
             group: GroupBy::Show,
             safe: true,
-            dupes_db: false,
+            dupes_db: true,
             my_panel: Panel::Duplicates,
             new_tag: String::new(),
         }
@@ -107,45 +109,88 @@ impl eframe::App for TemplateApp {
         
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
-
-            ui.horizontal(|ui| {
-                // ui.text_edit_singleline(&mut self.db_path);
-                ui.heading("Target Database: ");
-                if ui.button("Open Databse").clicked() {
-                    self.db_path = open_db();
-                    if let Some(path) = self.db_path.clone() {
-                        self.total_records = get_db_size(path.clone());
-                        self.columns = get_columns(path.clone());
-                    }
+            egui::menu::bar(ui, |ui| {
+                // NOTE: no File->Quit on web pages!
+                let is_web = cfg!(target_arch = "wasm32");
+                if !is_web {
+                    ui.menu_button("File", |ui| {
+                        if ui.button("Open Database").clicked() {
+                            ui.close_menu();
+                            self.db_path = open_db();
+                            if let Some(path) = self.db_path.clone() {
+                                self.total_records = get_db_size(path.clone());
+                                self.columns = get_columns(path.clone());
+                            }
+                        }
+                        if ui.button("Close Database").clicked() {ui.close_menu(); self.db_path = None;}
+                        if ui.button("Quit").clicked() {
+                            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+                        }
+                    });
+                    ui.add_space(16.0);
+                    ui.menu_button("Run", |ui| {
+                        if ui.button("Search For Duplicates").clicked() {}
+                        if ui.button("Search and Remove Duplicates").clicked() {}
+                        // if ui.button("Open").clicked() {}
+                        
+                    });
+                    ui.add_space(16.0);
+                    // ui.menu_button("View", |ui| {
+                    //     if ui.button("Duplicates Search").clicked() {ui.close_menu(); self.my_panel = Panel::Duplicates}
+                    //     if ui.button("Duplicate Order Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Order}
+                    //     if ui.button("Find & Replace Text").clicked() {ui.close_menu(); self.my_panel = Panel::Find}
+                        
+                    // });
+                    ui.add_space(16.0);
+                    ui.add_space(16.0);
+                    egui::menu::bar(ui, |ui| {
+                        
+                        ui.selectable_value(&mut self.my_panel, Panel::Duplicates, "Duplicate Filename Search",);
+                        ui.add_space(16.0);
+                        ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
+                        ui.add_space(16.0);
+                        // ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
+                        ui.selectable_value(&mut self.my_panel, Panel::Find, "Find/Replace Text in database",);
+                        ui.add_space(16.0);
+    
+                    });
                 }
+
             });
-            if self.db_path.is_none() {return;}
-            if let Some(path) = &self.db_path {
-                ui.label(path);
-            }
-            if self.total_records > 0 {
-                ui.label(format!("{} total records found in database", self.total_records));
-                // ui.horizontal(|ui| {
-                //     ui.label(self.total_records.to_string());
-                //     ui.label(" total records found in database");
-                    
-                // });
-            }
+
+            
+            
         });
             
             egui::CentralPanel::default().show(ctx, |ui| {
-            if self.db_path.is_none() {return;}
+                if self.db_path.is_none() {
+                    // ui.with_layout(Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
+                    if ui.button("Open Databse").clicked() {
+                        self.db_path = open_db();
+                        if let Some(path) = self.db_path.clone() {
+                            self.total_records = get_db_size(path.clone());
+                            self.columns = get_columns(path.clone());
+                        }
+                    }              
+                    // });
+                    return;
+                }
+                ui.horizontal(|_| {});
+                // ui.horizontal_centered(|ui| {
+                    if let Some(path) = &self.db_path {
+                        ui.heading(path.split('/').last().unwrap());
+                    }
+                    ui.label(format!("{} total records found in database", self.total_records));
+                    
+                // });
+                ui.horizontal(|_| {});
+                ui.separator();
+                ui.horizontal(|_| {});
+                
             // The central panel the region left after adding TopPanel's and SidePanel's
             // ui.heading("SMDB Companion");
-            egui::menu::bar(ui, |ui| {
-                
-                ui.selectable_value(&mut self.my_panel, Panel::Duplicates, "Duplicate Filename Search",);
-                ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
-                // ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
-                ui.selectable_value(&mut self.my_panel, Panel::Find, "Find/Replace Text in database",);
-    
-            });
-            ui.separator();
+         
+            // ui.separator();
 
             match self.my_panel {
                 Panel::Find => {
