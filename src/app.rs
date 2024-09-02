@@ -184,7 +184,7 @@ impl eframe::App for TemplateApp {
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
                         ui.checkbox(&mut self.group_search, "Group Duplicate Filename Search by: ");
-                        if self.group_search {
+                        // if self.group_search {
                         
                             // ui.radio_value(&mut self.group, GroupBy::Show, "Show");
                             // ui.radio_value(&mut self.group, GroupBy::Library, "Library");
@@ -196,7 +196,7 @@ impl eframe::App for TemplateApp {
                                         ui.selectable_value(&mut self.group_column, col.to_string(), format!("{col}"));
                                     }
                             });
-                        }
+                        // }
                         
                     });
                     ui.horizontal(|ui| {
