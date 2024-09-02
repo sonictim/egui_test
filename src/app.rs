@@ -1,6 +1,6 @@
-use std::ops::DerefMut;
-use egui::RadioButton;
-use eframe::egui::{self, Layout, Align, Align2};
+// use std::ops::DerefMut;
+// use egui::RadioButton;
+use eframe::egui::{self, FontId, RichText, TextStyle, WidgetText};
 
 use rusqlite::{Connection, Result};
 
@@ -164,25 +164,35 @@ impl eframe::App for TemplateApp {
             
             egui::CentralPanel::default().show(ctx, |ui| {
                 if self.db_path.is_none() {
-                    // ui.with_layout(Layout::centered_and_justified(egui::Direction::TopDown), |ui| {
-                    if ui.button("Open Databse").clicked() {
-                        self.db_path = open_db();
-                        if let Some(path) = self.db_path.clone() {
-                            self.total_records = get_db_size(path.clone());
-                            self.columns = get_columns(path.clone());
-                        }
-                    }              
+                    // ui.horizontal_centered(|ui| {
+                        ui.vertical_centered(|ui| {
+                            if ui.add_sized([200.0, 50.0], egui::Button::new(RichText::new("Open Database").size(24.0).strong())).clicked() {
+                                self.db_path = open_db();
+                                if let Some(path) = self.db_path.clone() {
+                                    self.total_records = get_db_size(path.clone());
+                                    self.columns = get_columns(path.clone());
+                                }
+                            } 
+                        });
+                    // });
+                    // if ui.button("Open Databse").clicked() {
+                    //     self.db_path = open_db();
+                    //     if let Some(path) = self.db_path.clone() {
+                    //         self.total_records = get_db_size(path.clone());
+                    //         self.columns = get_columns(path.clone());
+                    //     }
+                    // }              
                     // });
                     return;
                 }
                 ui.horizontal(|_| {});
-                // ui.horizontal_centered(|ui| {
+                ui.vertical_centered(|ui| {
                     if let Some(path) = &self.db_path {
                         ui.heading(path.split('/').last().unwrap());
                     }
-                    ui.label(format!("{} total records found in database", self.total_records));
+                    ui.label(format!("{} records", self.total_records));
                     
-                // });
+                });
                 ui.horizontal(|_| {});
                 ui.separator();
                 ui.horizontal(|_| {});
@@ -251,13 +261,13 @@ impl eframe::App for TemplateApp {
                         ui.radio_value(&mut self.group_null, true, "Process Together");
                         // ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
                     });
-                    ui.horizontal(|ui| {});
+                    ui.horizontal(|_| {});
                     ui.checkbox(&mut self.deep_dive_search, "Deep Dive Duplicates Search (Slow)");
                     ui.horizontal( |ui| {
                         ui.add_space(24.0);
                         ui.label("Filenames ending in .#, .#.#.#, or .M will be examined as possible duplicates");
                     });
-                    ui.horizontal(|ui| {});
+                    ui.horizontal(|_| {});
                     ui.checkbox(&mut self.tags_search, "Search for Records with AudioSuite Tags");
 
                     ui.horizontal(|ui| {
@@ -289,7 +299,7 @@ impl eframe::App for TemplateApp {
                             ui.label("Filenames with Common Protools AudioSuite Tags will be marked for removal")
                         });
                         
-                    ui.horizontal(|ui| {});
+                    ui.horizontal(|_| {});
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.compare_db, "Compare against database: ");
                         ui.text_edit_singleline(&mut self.compare_db_path);
@@ -305,7 +315,7 @@ impl eframe::App for TemplateApp {
                         ui.label("Filenames from Target Database found in Comparison Database will be Marked for Removal");
                     });
 
-                    ui.horizontal(|ui| {});
+                    ui.horizontal(|_| {});
                     ui.checkbox(&mut self.safe, "Create Safety Database of Thinned Records");
                     ui.checkbox(&mut self.dupes_db, "Create Database of Duplicate Records");
                     ui.separator();
