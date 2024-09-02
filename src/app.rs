@@ -1,4 +1,5 @@
 use std::ops::DerefMut;
+use egui::RadioButton;
 use rusqlite::{Connection, Result};
 
 use serde::Deserialize;
@@ -11,9 +12,9 @@ pub struct TemplateApp {
     db_path: Option<String>,
     total_records: usize,
     columns: Vec<String>,
+    column: String,
     find: String,
     replace: String,
-    column: String,
 
     basic_search: bool,
     group_search: bool,
@@ -25,18 +26,22 @@ pub struct TemplateApp {
     compare_db: bool,
     compare_db_path: String,
     order: String,
-    tags: String,
+    tag: String,
+    tags: Vec<String>,
+    group: GroupBy,
     
     #[serde(skip)] // This how you opt-out of serialization of a field
     safe: bool,
     dupes_db: bool,
     my_panel: Panel,
+    new_tag: String,
 
 }
 
 #[derive(PartialEq, serde::Serialize, Deserialize)]
 enum Panel { Duplicates, Order, Tags, Find }
-
+#[derive(PartialEq, serde::Serialize, Deserialize)]
+enum GroupBy { Show, Library, Other, None}
 
 
 impl Default for TemplateApp {
@@ -46,9 +51,9 @@ impl Default for TemplateApp {
             db_path: None,
             total_records: 0,
             columns: Vec::new(),
+            column: "Filepath".to_owned(),
             find: String::new(),
             replace: String::new(),
-            column: "Filepath".to_owned(),
             basic_search: true,
             group_search: false,
             group_column: "Show".to_owned(),
@@ -58,10 +63,13 @@ impl Default for TemplateApp {
             compare_db: false,
             compare_db_path: String::new(),
             order: TJF_DEFAULT_ORDER.to_owned(),
-            tags: DEFAULT_TAGS.to_owned(),
+            tag: "Tag".to_owned(),
+            tags: DEFAULT_TAGS_VEC.map(|s| s.to_string()).to_vec(),
+            group: GroupBy::Show,
             safe: true,
             dupes_db: false,
             my_panel: Panel::Duplicates,
+            new_tag: String::new(),
         }
     }
 }
@@ -80,6 +88,9 @@ impl TemplateApp {
 
         Default::default()
     }
+    fn reset_to_defaults(&mut self) {
+        *self = Self::default();
+    }
 }
 
 impl eframe::App for TemplateApp {
@@ -92,7 +103,8 @@ impl eframe::App for TemplateApp {
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
-
+        
+        
         egui::TopBottomPanel::top("top_panel").show(ctx, |ui| {
             // The top panel is often a good place for a menu bar:
 
@@ -103,7 +115,7 @@ impl eframe::App for TemplateApp {
                     self.db_path = open_db();
                     if let Some(path) = self.db_path.clone() {
                         self.total_records = get_db_size(path.clone());
-                        self.columns = get_columns(path);
+                        self.columns = get_columns(path.clone());
                     }
                 }
             });
@@ -129,7 +141,7 @@ impl eframe::App for TemplateApp {
                 
                 ui.selectable_value(&mut self.my_panel, Panel::Duplicates, "Duplicate Filename Search",);
                 ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
-                ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
+                // ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
                 ui.selectable_value(&mut self.my_panel, Panel::Find, "Find/Replace Text in database",);
     
             });
@@ -140,11 +152,13 @@ impl eframe::App for TemplateApp {
                     ui.heading("Find and Replace");
         
                     ui.horizontal(|ui| {
-                        ui.label("Find Text");
+                        ui.label("Find Text: ");
                         ui.text_edit_singleline(&mut self.find);
                         ui.label("in Column: ");
                         // ui.text_edit_singleline(&mut self.column);
-                        egui::ComboBox::from_label("in Column: ")
+                        // ui.radio_value(&mut self.column, "FilePath".to_string(), "File Path");
+                        // ui.radio_value(&mut self.column, format!("{}",&mut self.column), "Other: ");
+                        egui::ComboBox::from_label("")
                             .selected_text(format!("{}", self.column))
                             .show_ui(ui, |ui| {
                                 for col in &self.columns {
@@ -153,6 +167,7 @@ impl eframe::App for TemplateApp {
                         });
                     });
                     ui.horizontal(|ui| {
+                        ui.add_space(8.0);
                         ui.label("Replace: ");
                         ui.text_edit_singleline(&mut self.replace);
                     });
@@ -169,15 +184,67 @@ impl eframe::App for TemplateApp {
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
                         ui.checkbox(&mut self.group_search, "Group Duplicate Filename Search by: ");
-                        ui.text_edit_singleline(&mut self.group_column);
+                        if self.group_search {
+                        
+                            // ui.radio_value(&mut self.group, GroupBy::Show, "Show");
+                            // ui.radio_value(&mut self.group, GroupBy::Library, "Library");
+                            // ui.radio_value(&mut self.group, GroupBy::Other, "Other: ");
+                            egui::ComboBox::from_label(" ")
+                                .selected_text(format!("{}", self.group_column))
+                                .show_ui(ui, |ui| {
+                                    for col in &self.columns {
+                                        ui.selectable_value(&mut self.group_column, col.to_string(), format!("{col}"));
+                                    }
+                            });
+                        }
+                        
                     });
                     ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
+                        ui.add_space(44.0);
+                        ui.label("Records without group entry: ");
+                        ui.radio_value(&mut self.group_null, false, "Skip/Ignore");
+                        ui.radio_value(&mut self.group_null, true, "Process Together");
+                        // ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
                     });
                     ui.horizontal(|ui| {});
-                    ui.checkbox(&mut self.tags_search, "Plug-In Tags Search");
-                    ui.checkbox(&mut self.deep_dive_search, "Deep Dive Duplicates Search");
+                    ui.checkbox(&mut self.deep_dive_search, "Deep Dive Duplicates Search (Slow)");
+                    ui.horizontal( |ui| {
+                        ui.add_space(24.0);
+                        ui.label("Filenames ending in .#, .#.#.#, or .M will be examined as possible duplicates");
+                    });
+                    ui.horizontal(|ui| {});
+                    ui.checkbox(&mut self.tags_search, "Search for Records with AudioSuite Tags");
+
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        if ui.button("Add Tag:").clicked {
+                            self.tags.sort_by_key(|s| s.to_lowercase());
+                            if self.new_tag.len() > 0 {
+                                self.tags.push(self.new_tag.clone());
+                                self.new_tag = "".to_string();
+                            }}
+                            ui.text_edit_singleline(&mut self.new_tag);    
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(24.0);
+                            if ui.button("Remove Tag").clicked {
+                                self.tags.retain(|s| s != &self.tag);
+                                self.tag = "".to_string();
+                            }
+                            egui::ComboBox::from_label("")
+                            .selected_text(format!("{}", self.tag))
+                            .show_ui(ui, |ui| {
+                                for tag in &self.tags {
+                                    ui.selectable_value(&mut self.tag, tag.to_string(), format!("{tag}"));
+                                }
+                            });
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(24.0);
+                            ui.label("Filenames with Common Protools AudioSuite Tags will be marked for removal")
+                        });
+                        
+                    ui.horizontal(|ui| {});
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.compare_db, "Compare against database: ");
                         ui.text_edit_singleline(&mut self.compare_db_path);
@@ -188,6 +255,11 @@ impl eframe::App for TemplateApp {
                             }
                         }
                     });
+                    ui.horizontal(|ui| {
+                        ui.add_space(24.0);
+                        ui.label("Filenames from Target Database found in Comparison Database will be Marked for Removal");
+                    });
+
                     ui.horizontal(|ui| {});
                     ui.checkbox(&mut self.safe, "Create Safety Database of Thinned Records");
                     ui.checkbox(&mut self.dupes_db, "Create Database of Duplicate Records");
@@ -198,6 +270,9 @@ impl eframe::App for TemplateApp {
                         }
                         if ui.button("Remove Duplicates").clicked() {
                             remove_dupicates();
+                        }
+                        if ui.button("Reset to Defaults").clicked() {
+                            self.reset_to_defaults();
                         }
                     });
 
@@ -216,15 +291,15 @@ impl eframe::App for TemplateApp {
                 }
 
                 Panel::Tags => {
-                    ui.columns(1, |columns| {
+                    // ui.columns(1, |columns| {
                      
-                        columns[0].heading("Protools Plugin Tag Search:");
-                        columns[0].text_edit_multiline(&mut self.tags);
-                        if columns[0].button("Default Tags").clicked() {
-                            self.tags = DEFAULT_TAGS.to_owned();
-                        }
+                    //     columns[0].heading("Protools Plugin Tag Search:");
+                    //     columns[0].text_edit_multiline(&mut self.tags);
+                    //     if columns[0].button("Default Tags").clicked() {
+                    //         self.tags = DEFAULT_TAGS.to_owned();
+                    //     }
         
-                    });
+                    // });
                     
                 }
 
@@ -263,12 +338,15 @@ fn get_columns(db_path: String) -> Vec<String> {
     let mut stmt = conn.prepare("PRAGMA table_info(justinmetadata);").unwrap();
 
     // Execute the query and collect the column names into a Vec<String>
-    let column_names: Vec<String> = stmt.query_map([], |row| {
+    let mut column_names: Vec<String> = stmt.query_map([], |row| {
         Ok(row.get::<_, String>(1)?) // The 1st index corresponds to the "name" column
     }).unwrap()
     .filter_map(Result::ok) // Filter out any errors
+    .filter(|c| !c.starts_with("_"))
     .collect();
 
+
+    column_names.sort();
     column_names
 }
 
@@ -345,3 +423,50 @@ const DEFAULT_TAGS: &str = r#"-1eqa_
 -Z4n2_
 -ZXN5_  
 "#;
+
+const DEFAULT_TAGS_VEC: [&str; 44] = [
+    "-6030_", 
+    "-7eqa_",
+    "-A2sA_", 
+    "-A44m_", 
+    "-A44s_", 
+    "-Alt7S_", 
+    "-ASMA_", 
+    "-AVrP_", 
+    "-AVrT_", 
+    "-AVSt_", 
+    "-DEC4_", 
+    "-Delays_", 
+    "-Dn_",
+    "-DUPL_",
+    "-DVerb_", 
+    "-GAIN_", 
+    "-M2DN_", 
+    "-NORM_",
+    "-NYCT_", 
+    "-PiSh_", 
+    "-PnT2_", 
+    "-PnTPro_", 
+    "-ProQ2_", 
+    "-PSh_", 
+    "-Reverse_", 
+    "-RVRS_", 
+    "-RING_", 
+    "-RX7Cnct_", 
+    "-spce_", 
+    "-TCEX_", 
+    "-TiSh_", 
+    "-TmShft_", 
+    "-VariFi_", 
+    "-VlhllVV_", 
+    "-VSPD_",
+    "-VitmnMn_", 
+    "-VtmnStr_", 
+    "-X2mA_", 
+    "-X2sA_", 
+    "-XForm_",
+    "-Z2N5_",
+    "-Z2S5_",
+    "-Z4n2_",
+    "-ZXN5_", 
+];
