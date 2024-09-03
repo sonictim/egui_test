@@ -2,6 +2,7 @@
 // use egui::RadioButton;
 use eframe::egui::{self, FontId, RichText, TextStyle, WidgetText};
 
+use egui::menu::menu_button;
 use rusqlite::{Connection, Result};
 
 use serde::Deserialize;
@@ -26,8 +27,8 @@ pub struct TemplateApp {
     tags_search: bool,
     deep_dive_search: bool,
     compare_db: bool,
-    compare_db_path: String,
-    order: String,
+    compare_db_path: Option<String>,
+    order: Vec<String>,
     tag: String,
     tags: Vec<String>,
     group: GroupBy,
@@ -37,11 +38,15 @@ pub struct TemplateApp {
     dupes_db: bool,
     my_panel: Panel,
     new_tag: String,
+    sel_tags: Vec<bool>,
+    new_line: String,
+    sel_line: Option<usize>,
+    order_text: String,
 
 }
 
 #[derive(PartialEq, serde::Serialize, Deserialize)]
-enum Panel { Duplicates, Order, Tags, Find }
+enum Panel { Duplicates, Order, OrderText, Tags, Find }
 #[derive(PartialEq, serde::Serialize, Deserialize)]
 enum GroupBy { Show, Library, Other, None}
 
@@ -63,8 +68,8 @@ impl Default for TemplateApp {
             tags_search: true,
             deep_dive_search: false,
             compare_db: false,
-            compare_db_path: String::new(),
-            order: TJF_DEFAULT_ORDER.to_owned(),
+            compare_db_path: None,
+            order: DEFAULT_ORDER_VEC.map(|s| s.to_string()).to_vec(),
             tag: "Tag".to_owned(),
             tags: DEFAULT_TAGS_VEC.map(|s| s.to_string()).to_vec(),
             group: GroupBy::Show,
@@ -72,6 +77,10 @@ impl Default for TemplateApp {
             dupes_db: true,
             my_panel: Panel::Duplicates,
             new_tag: String::new(),
+            sel_tags: Vec::new(),
+            new_line: String::new(),
+            sel_line: None,
+            order_text: String::new(),
         }
     }
 }
@@ -90,8 +99,13 @@ impl TemplateApp {
 
         Default::default()
     }
-    fn reset_to_defaults(&mut self) {
+    fn reset_to_defaults(&mut self, db_path: Option<String>) {
         *self = Self::default();
+        self.db_path = db_path;
+        if let Some(path) = self.db_path.clone() {
+            self.total_records = get_db_size(path.clone());
+            self.columns = get_columns(path.clone());
+        }
     }
 }
 
@@ -127,28 +141,32 @@ impl eframe::App for TemplateApp {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
-                    ui.add_space(16.0);
-                    ui.menu_button("Run", |ui| {
-                        if ui.button("Search For Duplicates").clicked() {}
-                        if ui.button("Search and Remove Duplicates").clicked() {}
-                        // if ui.button("Open").clicked() {}
+                    // ui.add_space(16.0);
+                    // ui.menu_button("Run", |ui| {
+                    //     if ui.button("Search For Duplicates").clicked() {}
+                    //     if ui.button("Search and Remove Duplicates").clicked() {}
+                    //     // if ui.button("Open").clicked() {}
                         
+                    // });
+                    // ui.add_space(16.0);
+                    ui.menu_button("Config", |ui| {
+                        if ui.button("Restore Defaults").clicked() {ui.close_menu(); self.reset_to_defaults(self.db_path.clone())}
+                        if ui.button("Edit Duplicate Search Logic").clicked() {ui.close_menu(); self.my_panel = Panel::Order}
+                        // if ui.button("Tag Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Tags}
                     });
-                    ui.add_space(16.0);
                     // ui.menu_button("View", |ui| {
                     //     if ui.button("Duplicates Search").clicked() {ui.close_menu(); self.my_panel = Panel::Duplicates}
-                    //     if ui.button("Duplicate Order Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Order}
                     //     if ui.button("Find & Replace Text").clicked() {ui.close_menu(); self.my_panel = Panel::Find}
                         
                     // });
-                    ui.add_space(16.0);
-                    ui.add_space(16.0);
+                    ui.add_space(48.0);
+                    // ui.add_space(16.0);
                     egui::menu::bar(ui, |ui| {
                         
                         ui.selectable_value(&mut self.my_panel, Panel::Duplicates, "Duplicate Filename Search",);
                         ui.add_space(16.0);
-                        ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
-                        ui.add_space(16.0);
+                        // ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
+                        // ui.add_space(16.0);
                         // ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
                         ui.selectable_value(&mut self.my_panel, Panel::Find, "Find/Replace Text in database",);
                         ui.add_space(16.0);
@@ -188,7 +206,7 @@ impl eframe::App for TemplateApp {
                 ui.horizontal(|_| {});
                 ui.vertical_centered(|ui| {
                     if let Some(path) = &self.db_path {
-                        ui.heading(path.split('/').last().unwrap());
+                        ui.heading(RichText::new(path.split('/').last().unwrap()).size(24.0).strong());
                     }
                     ui.label(format!("{} records", self.total_records));
                     
@@ -277,9 +295,9 @@ impl eframe::App for TemplateApp {
                             if self.new_tag.len() > 0 {
                                 self.tags.push(self.new_tag.clone());
                                 self.new_tag = "".to_string();
-                            }}
-                            ui.text_edit_singleline(&mut self.new_tag);    
-                        });
+                        }}
+                        ui.text_edit_singleline(&mut self.new_tag);    
+                    });
                         ui.horizontal(|ui| {
                             ui.add_space(24.0);
                             if ui.button("Remove Tag").clicked {
@@ -302,14 +320,18 @@ impl eframe::App for TemplateApp {
                     ui.horizontal(|_| {});
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.compare_db, "Compare against database: ");
-                        ui.text_edit_singleline(&mut self.compare_db_path);
-                        if ui.button("Open file…").clicked() {
-                            if let Some(path) = rfd::FileDialog::new().pick_file() {
-                                self.compare_db_path = path.display().to_string();
-                                // self.db_path = Some(path.display().to_string());
-                            }
+                        if let Some(path) = &self.compare_db_path {
+                            ui.label(path.split('/').last().unwrap());
+                        }
+
+                        
+                        // ui.text_edit_singleline(&mut self.compare_db_path);
+                        if ui.button("Select DB").clicked() {
+                            self.compare_db_path = open_db();
+                                
                         }
                     });
+                   
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
                         ui.label("Filenames from Target Database found in Comparison Database will be Marked for Removal");
@@ -326,35 +348,115 @@ impl eframe::App for TemplateApp {
                         if ui.button("Remove Duplicates").clicked() {
                             remove_dupicates();
                         }
-                        if ui.button("Reset to Defaults").clicked() {
-                            self.reset_to_defaults();
-                        }
+                        // if ui.button("Reset to Defaults").clicked() {
+                        //     self.reset_to_defaults();
+                        // }
                     });
 
                 }
                 Panel::Order => {
-                    ui.columns(1, |columns| {
-                        columns[0].heading("Duplicate Filename Keeper Priority Order:");
-                        columns[0].text_edit_multiline(&mut self.order);
-                        if columns[0].button("Default Order").clicked() {
-                            self.order = TJF_DEFAULT_ORDER.to_owned();
+                    ui.heading("Column in order of Priority and whether it should be DESCending or ASCending.");
+                    ui.label("These are SQL arguments and Google/ChatGPT can help you figure out how to compose them");
+                    ui.horizontal(|_|{});
+                    ui.heading("Examples:");
+                    ui.heading("CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC");
+                    ui.label("Records with 'Audio Files' in the path will be removed over something that does not have it");
+                    ui.horizontal(|_|{});
+                    ui.heading("CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC");
+                    ui.label("Records with 'LIBRARY' (not case sensitive) in the path will be kept over records without");
+                    ui.horizontal(|_|{});
+                    ui.heading("Rules at the top of the list are prioritized over those below");
+                    ui.separator();
+                    
+                    ui.horizontal(|ui| {
+                        if ui.button("Up").clicked() {
+                            if let Some(index) = self.sel_line {
+                                if index > 0 {
+                                    self.sel_line = Some(index-1);
+                                    self.order.swap(index, index-1);
+                                }
+                            }
                         }
-                   
-        
+                        if ui.button("Down").clicked() {
+                            if let Some(index) = self.sel_line {
+                                if index < self.order.len() - 1 {
+                                    self.sel_line = Some(index+1);
+                                    self.order.swap(index, index+1);
+                                }
+                            }
+                        }
+                        if ui.button("Remove").clicked() {
+                            if let Some(index) = self.sel_line {
+                                self.order.remove(index);
+                                self.sel_line = None;
+                            }
+                        }
+                        
+                        
+                        if ui.button("Add Line:").clicked {
+                            
+                            if self.new_line.len() > 0 {
+                                self.order.insert(0, self.new_line.clone());
+                                self.new_line = "".to_string();
+                        }}
+                        ui.text_edit_singleline(&mut self.new_line);    
                     });
+                    ui.separator();
+                    for (index, line) in self.order.iter_mut().enumerate() {
+                        let checked = self.sel_line == Some(index);
+                        if ui.selectable_label(checked, line.clone()).clicked {
+                            self.sel_line = if checked { None } else { Some(index) };
+                        }
+                    }
+                    ui.separator();
+                    if ui.button("Text Editor").clicked() {
+                        self.order_text = self.order.join("\n");
+                        self.my_panel = Panel::OrderText;
+                    }
                     
                 }
 
+                Panel:: OrderText => {
+                    ui.heading("Column in order of Priority and whether it should be DESCending or ASCending.");
+                    ui.label("These are SQL arguments and Google/ChatGPT can help you figure out how to compose them");
+                    ui.horizontal(|_|{});
+                    ui.heading("Examples:");
+                    ui.heading("CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC");
+                    ui.label("Records with 'Audio Files' in the path will be removed over something that does not have it");
+                    ui.horizontal(|_|{});
+                    ui.heading("CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC");
+                    ui.label("Records with 'LIBRARY' (not case sensitive) in the path will be kept over records without");
+                    ui.horizontal(|_|{});
+                    ui.heading("Rules at the top of the list are prioritized over those below");
+                    ui.separator();
+
+                    ui.columns(1, |columns| {
+                        // columns[0].heading("Duplicate Filename Keeper Priority Order:");
+                        columns[0].text_edit_multiline(&mut self.order_text);
+                    });
+                    ui.separator();
+                    if ui.button("Save").clicked() {
+                        self.order = self.order_text.lines().map(|s| s.to_string()).collect();
+                        self.my_panel = Panel::Order;
+                    }
+                }
+
                 Panel::Tags => {
-                    // ui.columns(1, |columns| {
+                    
+                  
+                    // let mut remove = None;
+                    for (index, tag) in self.tags.iter_mut().enumerate() {
+                        if self.sel_tags.len() == index {self.sel_tags.push(false)}
+                        if ui.selectable_label(self.sel_tags[index], tag.clone()).clicked {
+                            self.sel_tags[index] = !self.sel_tags[index];
+                            
+                        }
                      
-                    //     columns[0].heading("Protools Plugin Tag Search:");
-                    //     columns[0].text_edit_multiline(&mut self.tags);
-                    //     if columns[0].button("Default Tags").clicked() {
-                    //         self.tags = DEFAULT_TAGS.to_owned();
-                    //     }
-        
-                    // });
+                    }
+                    // if let Some(index) = remove {
+                    //     self.tags.remove(index);
+                    // }
+
                     
                 }
 
@@ -431,6 +533,9 @@ bitDepth DESC
 BWDate ASC
 scannedDate ASC
 "#;
+
+
+
 
 const DEFAULT_TAGS: &str = r#"-1eqa_ 
 -6030_  
@@ -524,4 +629,29 @@ const DEFAULT_TAGS_VEC: [&str; 44] = [
     "-Z2S5_",
     "-Z4n2_",
     "-ZXN5_", 
+];
+
+const DEFAULT_ORDER_VEC: [&str; 22] = [
+    "CASE WHEN pathname LIKE '%TJF RECORDINGS%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%LIBRARIES%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%SHOWS/Tim Farrell%' THEN 1 ELSE 0 END ASC",
+    "CASE WHEN Description IS NOT NULL AND Description != '' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC",
+    "CASE WHEN pathname LIKE '%RECORD%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%CREATED SFX%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%CREATED FX%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%/LIBRARY%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%LIBRARY/%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%SIGNATURE%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%PULLS%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%EDIT%' THEN 1 ELSE 0 END ASC",
+    "CASE WHEN pathname LIKE '%MIX%' THEN 1 ELSE 0 END ASC",
+    "CASE WHEN pathname LIKE '%SESSION%' THEN 1 ELSE 0 END ASC",
+    "duration DESC",
+    "channels DESC",
+    "sampleRate DESC",
+    "bitDepth DESC",
+    "BWDate ASC",
+    "scannedDate ASC",
 ];
