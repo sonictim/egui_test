@@ -2,7 +2,7 @@
 // use egui::RadioButton;
 use eframe::egui::{self, FontId, RichText, TextStyle, WidgetText};
 
-use egui::menu::menu_button;
+use egui::{menu::menu_button, ModifierNames};
 use rusqlite::{Connection, Result};
 
 use serde::Deserialize;
@@ -38,7 +38,7 @@ pub struct TemplateApp {
     dupes_db: bool,
     my_panel: Panel,
     new_tag: String,
-    sel_tags: Vec<bool>,
+    sel_tags: Vec<usize>,
     new_line: String,
     sel_line: Option<usize>,
     order_text: String,
@@ -152,7 +152,10 @@ impl eframe::App for TemplateApp {
                     ui.menu_button("Config", |ui| {
                         if ui.button("Restore Defaults").clicked() {ui.close_menu(); self.reset_to_defaults(self.db_path.clone())}
                         if ui.button("Edit Duplicate Search Logic").clicked() {ui.close_menu(); self.my_panel = Panel::Order}
-                        // if ui.button("Tag Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Tags}
+                        // if ui.input().modifiers.alt {
+                        if  ui.input(|i| i.modifiers.alt ) {
+                            if ui.button("Tag Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Tags}
+                        }
                     });
                     // ui.menu_button("View", |ui| {
                     //     if ui.button("Duplicates Search").clicked() {ui.close_menu(); self.my_panel = Panel::Duplicates}
@@ -227,6 +230,14 @@ impl eframe::App for TemplateApp {
                     ui.horizontal(|ui| {
                         ui.label("Find Text: ");
                         ui.text_edit_singleline(&mut self.find);
+                        
+                    });
+                    ui.horizontal(|ui| {
+                        ui.label("Replace: ");
+                        ui.add_space(8.0);
+                        ui.text_edit_singleline(&mut self.replace);
+                    });
+                    ui.horizontal(|ui| {
                         ui.label("in Column: ");
                         // ui.text_edit_singleline(&mut self.column);
                         // ui.radio_value(&mut self.column, "FilePath".to_string(), "File Path");
@@ -238,11 +249,6 @@ impl eframe::App for TemplateApp {
                                     ui.selectable_value(&mut self.column, col.to_string(), format!("{col}"));
                                 }
                         });
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_space(8.0);
-                        ui.label("Replace: ");
-                        ui.text_edit_singleline(&mut self.replace);
                     });
         
                     if ui.button("Process").clicked() {
@@ -442,22 +448,70 @@ impl eframe::App for TemplateApp {
                 }
 
                 Panel::Tags => {
+                    ui.heading("Tag Editor");
+                    ui.label("Protools Audiosuite Tags use the following format:  -example_");
+                    ui.label("You can enter any string of text and if it is a match, the file will be marked for removal");
                     
-                  
-                    // let mut remove = None;
-                    for (index, tag) in self.tags.iter_mut().enumerate() {
-                        if self.sel_tags.len() == index {self.sel_tags.push(false)}
-                        if ui.selectable_label(self.sel_tags[index], tag.clone()).clicked {
-                            self.sel_tags[index] = !self.sel_tags[index];
+                    ui.separator();
+                    let num_columns = 6;
+                    egui::ScrollArea::vertical().show(ui, |ui| {
+                        egui::Grid::new("Tags Grid")
+                        .num_columns(num_columns)
+                        .spacing([20.0, 8.0])
+                        .striped(true)
+                        .show(ui, |ui| {
+                            for (index, tag) in self.tags.iter_mut().enumerate() {
+                                // Check if current index is in `sel_tags`
+                                let is_selected = self.sel_tags.contains(&index);
+                                
+                                if ui.selectable_label(is_selected, tag.clone()).clicked() {
+                                    if is_selected {
+                                        // Deselect
+                                        self.sel_tags.retain(|&i| i != index);
+                                    } else {
+                                        // Select
+                                        self.sel_tags.push(index);
+                                    }
+                                }
+                                
+                                if (index + 1) % num_columns == 0 {
+                                    ui.end_row(); // Move to the next row after 4 columns
+                                }
+                            }
                             
-                        }
-                     
-                    }
-                    // if let Some(index) = remove {
-                    //     self.tags.remove(index);
-                    // }
+                            // End the last row if not fully filled
+                            if self.tags.len() % 4 != 0 {
+                                ui.end_row();
+                            }
+                        });
+                    });
+                    ui.separator();
+                    ui.horizontal(|ui| {
+                        if ui.button("Add Tag:").clicked() && !self.new_tag.is_empty() {
 
-                    
+                            self.tags.push(self.new_tag.clone());
+                            self.new_tag.clear(); // Clears the string      
+                            self.tags.sort_by_key(|s| s.to_lowercase());
+                        }
+                        ui.text_edit_singleline(&mut self.new_tag);
+                        
+                        
+                    });
+                    if ui.button("Remove Selected Tags").clicked() {
+                        // Sort and remove elements based on `sel_tags`
+                        let mut sorted_indices: Vec<usize> = self.sel_tags.clone();
+                        sorted_indices.sort_by(|a, b| b.cmp(a)); // Sort in reverse order
+                
+                        for index in sorted_indices {
+                            if index < self.tags.len() {
+                                self.tags.remove(index);
+                            }
+                        }
+                
+                        // Clear the selection list after removal
+                        self.sel_tags.clear();
+                    }
+                   
                 }
 
 
