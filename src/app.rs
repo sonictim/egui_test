@@ -4,83 +4,145 @@ use eframe::egui::{self, FontId, RichText, TextStyle, WidgetText};
 
 use egui::{menu::menu_button, ModifierNames};
 use rusqlite::{Connection, Result};
+use std::collections::HashSet;
+use std::collections::HashMap;
+use std::env;
+use std::fs::{self, File};
+use std::io::{self, BufRead, Write};
+use std::path::Path;
+use std::error::Error;
+// use terminal_size::{Width, terminal_size};
+// use regex::Regex;
+// use ordered_float::OrderedFloat;
+
+
+
 
 use serde::Deserialize;
+
+#[derive(Default, serde::Deserialize, serde::Serialize)]
+#[serde(default)] 
+struct Config {
+    enabled: bool,
+    // enabled2: bool,
+    option: Option<String>,
+    #[serde(skip)]
+    status: String,
+    #[serde(skip)]
+    records: HashSet<FileRecord>,
+}
+
+impl Config {
+    fn new(on: bool) -> Self {
+        Self {
+            enabled: on,
+            // enabled2: false,
+            option: None,
+            status: String::new(),
+            records: HashSet::new(),
+
+        }
+    }
+    fn new_option(on: bool, o: &str) -> Self {
+        Self {
+            enabled: on,
+            // enabled2: false,
+            option: Some(o.to_string()),
+            status: String::new(),
+            records: HashSet::new(),
+
+        }
+    }
+    
+}
+
+#[derive(Hash, Eq, PartialEq, Clone, Debug)]
+struct FileRecord {
+    id: usize,
+    filename: String,
+    duration: String,
+}
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
-    // Example stuff:
-    db_path: Option<String>,
     total_records: usize,
     columns: Vec<String>,
     column: String,
     find: String,
     replace: String,
 
-    basic_search: bool,
-    group_search: bool,
-    group_column: String,
+    basic_search: Config,
+    group_search: Config,
     group_null: bool,
 
-    tags_search: bool,
-    deep_dive_search: bool,
-    compare_db: bool,
-    compare_db_path: Option<String>,
+    tags_search: Config,
+    deep_dive_search: Config,
+    compare_db: Config,
+
     order: Vec<String>,
-    tag: String,
     tags: Vec<String>,
-    group: GroupBy,
+
     
     #[serde(skip)] // This how you opt-out of serialization of a field
     safe: bool,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     dupes_db: bool,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     my_panel: Panel,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     new_tag: String,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     sel_tags: Vec<usize>,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     new_line: String,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     sel_line: Option<usize>,
+    #[serde(skip)] // This how you opt-out of serialization of a field
     order_text: String,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    help: bool,
 
-}
+}    
+
+
 
 #[derive(PartialEq, serde::Serialize, Deserialize)]
 enum Panel { Duplicates, Order, OrderText, Tags, Find }
-#[derive(PartialEq, serde::Serialize, Deserialize)]
-enum GroupBy { Show, Library, Other, None}
 
 
 impl Default for TemplateApp {
     fn default() -> Self {
         Self {
             // Example stuff:
-            db_path: None,
+
             total_records: 0,
             columns: Vec::new(),
             column: "Filepath".to_owned(),
             find: String::new(),
             replace: String::new(),
-            basic_search: true,
-            group_search: false,
-            group_column: "Show".to_owned(),
+            basic_search: Config::new(true),
+            group_search: Config::new_option(false, "Show"),
             group_null: false,
-            tags_search: true,
-            deep_dive_search: false,
-            compare_db: false,
-            compare_db_path: None,
+     
+            tags_search: Config::new_option(false, "-"),
+            deep_dive_search: Config::new(false),
+            compare_db: Config::new(false),
+
             order: DEFAULT_ORDER_VEC.map(|s| s.to_string()).to_vec(),
-            tag: "Tag".to_owned(),
             tags: DEFAULT_TAGS_VEC.map(|s| s.to_string()).to_vec(),
-            group: GroupBy::Show,
+
+
             safe: true,
-            dupes_db: true,
+            dupes_db: false,
             my_panel: Panel::Duplicates,
             new_tag: String::new(),
             sel_tags: Vec::new(),
             new_line: String::new(),
             sel_line: None,
             order_text: String::new(),
+            help: false,
         }
     }
 }
@@ -101,8 +163,18 @@ impl TemplateApp {
     }
     fn reset_to_defaults(&mut self, db_path: Option<String>) {
         *self = Self::default();
-        self.db_path = db_path;
-        if let Some(path) = self.db_path.clone() {
+        self.basic_search.option = db_path;
+        if let Some(path) = self.basic_search.option.clone() {
+            self.total_records = get_db_size(path.clone());
+            self.columns = get_columns(path.clone());
+        }
+    }
+    fn reset_to_TJFdefaults(&mut self, db_path: Option<String>) {
+        *self = Self::default();
+        self.basic_search.option = db_path;
+        self.order = TJF_ORDER_VEC.map(|s| s.to_string()).to_vec();
+        self.tags = TJF_TAGS_VEC.map(|s| s.to_string()).to_vec();
+        if let Some(path) = self.basic_search.option.clone() {
             self.total_records = get_db_size(path.clone());
             self.columns = get_columns(path.clone());
         }
@@ -130,13 +202,13 @@ impl eframe::App for TemplateApp {
                     ui.menu_button("File", |ui| {
                         if ui.button("Open Database").clicked() {
                             ui.close_menu();
-                            self.db_path = open_db();
-                            if let Some(path) = self.db_path.clone() {
+                            self.basic_search.option = open_db();
+                            if let Some(path) = self.basic_search.option.clone() {
                                 self.total_records = get_db_size(path.clone());
                                 self.columns = get_columns(path.clone());
                             }
                         }
-                        if ui.button("Close Database").clicked() {ui.close_menu(); self.db_path = None;}
+                        if ui.button("Close Database").clicked() {ui.close_menu(); self.basic_search.option = None;}
                         if ui.button("Quit").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
@@ -150,12 +222,13 @@ impl eframe::App for TemplateApp {
                     // });
                     // ui.add_space(16.0);
                     ui.menu_button("Config", |ui| {
-                        if ui.button("Restore Defaults").clicked() {ui.close_menu(); self.reset_to_defaults(self.db_path.clone())}
-                        if ui.button("Edit Duplicate Search Logic").clicked() {ui.close_menu(); self.my_panel = Panel::Order}
-                        // if ui.input().modifiers.alt {
+                        if ui.button("Restore Defaults").clicked() {ui.close_menu(); self.reset_to_defaults(self.basic_search.option.clone())}
                         if  ui.input(|i| i.modifiers.alt ) {
-                            if ui.button("Tag Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Tags}
+                            if ui.button("TJF Defaults").clicked() {ui.close_menu(); self.reset_to_TJFdefaults(self.basic_search.option.clone())}
                         }
+                        if ui.button("Duplicate Search Logic").clicked() {ui.close_menu(); self.my_panel = Panel::Order}
+                            if ui.button("Tag Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Tags}
+
                     });
                     // ui.menu_button("View", |ui| {
                     //     if ui.button("Duplicates Search").clicked() {ui.close_menu(); self.my_panel = Panel::Duplicates}
@@ -182,33 +255,27 @@ impl eframe::App for TemplateApp {
             
             
         });
+        
+    // The central panel the region left after adding TopPanel's and SidePanel's
             
             egui::CentralPanel::default().show(ctx, |ui| {
-                if self.db_path.is_none() {
+                if self.basic_search.option.is_none() {
                     // ui.horizontal_centered(|ui| {
                         ui.vertical_centered(|ui| {
                             if ui.add_sized([200.0, 50.0], egui::Button::new(RichText::new("Open Database").size(24.0).strong())).clicked() {
-                                self.db_path = open_db();
-                                if let Some(path) = self.db_path.clone() {
+                                self.basic_search.option = open_db();
+                                if let Some(path) = self.basic_search.option.clone() {
                                     self.total_records = get_db_size(path.clone());
                                     self.columns = get_columns(path.clone());
                                 }
                             } 
                         });
-                    // });
-                    // if ui.button("Open Databse").clicked() {
-                    //     self.db_path = open_db();
-                    //     if let Some(path) = self.db_path.clone() {
-                    //         self.total_records = get_db_size(path.clone());
-                    //         self.columns = get_columns(path.clone());
-                    //     }
-                    // }              
-                    // });
+       
                     return;
                 }
                 ui.horizontal(|_| {});
                 ui.vertical_centered(|ui| {
-                    if let Some(path) = &self.db_path {
+                    if let Some(path) = &self.basic_search.option {
                         ui.heading(RichText::new(path.split('/').last().unwrap()).size(24.0).strong());
                     }
                     ui.label(format!("{} records", self.total_records));
@@ -217,11 +284,7 @@ impl eframe::App for TemplateApp {
                 ui.horizontal(|_| {});
                 ui.separator();
                 ui.horizontal(|_| {});
-                
-            // The central panel the region left after adding TopPanel's and SidePanel's
-            // ui.heading("SMDB Companion");
-         
-            // ui.separator();
+
 
             match self.my_panel {
                 Panel::Find => {
@@ -258,24 +321,24 @@ impl eframe::App for TemplateApp {
                 Panel::Duplicates => {
                     ui.heading("Search for Duplicate Records");
         
-                    ui.checkbox(&mut self.basic_search, "Basic Duplicate Filename Search");
+                    ui.checkbox(&mut self.basic_search.enabled, "Basic Duplicate Filename Search");
                     // ui.style_mut().spacing.indent = 5.0;
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
-                        ui.checkbox(&mut self.group_search, "Group Duplicate Filename Search by: ");
-                        // if self.group_search {
+                        ui.checkbox(&mut self.group_search.enabled, "Group Duplicate Filename Search by: ");
+                        if let Some(group) = &mut self.group_search.option {
                         
                             // ui.radio_value(&mut self.group, GroupBy::Show, "Show");
                             // ui.radio_value(&mut self.group, GroupBy::Library, "Library");
                             // ui.radio_value(&mut self.group, GroupBy::Other, "Other: ");
                             egui::ComboBox::from_label(" ")
-                                .selected_text(format!("{}", self.group_column))
+                                .selected_text(format!("{}", group))
                                 .show_ui(ui, |ui| {
                                     for col in &self.columns {
-                                        ui.selectable_value(&mut self.group_column, col.to_string(), format!("{col}"));
+                                        ui.selectable_value(group, col.to_string(), format!("{col}"));
                                     }
                             });
-                        // }
+                        }
                         
                     });
                     ui.horizontal(|ui| {
@@ -286,38 +349,40 @@ impl eframe::App for TemplateApp {
                         // ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
                     });
                     ui.horizontal(|_| {});
-                    ui.checkbox(&mut self.deep_dive_search, "Deep Dive Duplicates Search (Slow)");
+                    ui.checkbox(&mut self.deep_dive_search.enabled, "Deep Dive Duplicates Search (Slow)");
                     ui.horizontal( |ui| {
                         ui.add_space(24.0);
                         ui.label("Filenames ending in .#, .#.#.#, or .M will be examined as possible duplicates");
                     });
                     ui.horizontal(|_| {});
-                    ui.checkbox(&mut self.tags_search, "Search for Records with AudioSuite Tags");
+                    ui.checkbox(&mut self.tags_search.enabled, "Search for Records with AudioSuite Tags");
 
-                    ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        if ui.button("Add Tag:").clicked {
-                            self.tags.sort_by_key(|s| s.to_lowercase());
-                            if self.new_tag.len() > 0 {
-                                self.tags.push(self.new_tag.clone());
-                                self.new_tag = "".to_string();
-                        }}
-                        ui.text_edit_singleline(&mut self.new_tag);    
-                    });
-                        ui.horizontal(|ui| {
-                            ui.add_space(24.0);
-                            if ui.button("Remove Tag").clicked {
-                                self.tags.retain(|s| s != &self.tag);
-                                self.tag = "".to_string();
-                            }
-                            egui::ComboBox::from_label("")
-                            .selected_text(format!("{}", self.tag))
-                            .show_ui(ui, |ui| {
-                                for tag in &self.tags {
-                                    ui.selectable_value(&mut self.tag, tag.to_string(), format!("{tag}"));
-                                }
-                            });
-                        });
+                    // ui.horizontal(|ui| {
+                    //     ui.add_space(24.0);
+                    //     if ui.button("Add Tag:").clicked {
+                    //         self.tags.sort_by_key(|s| s.to_lowercase());
+                    //         if self.new_tag.len() > 0 {
+                    //             self.tags.push(self.new_tag.clone());
+                    //             self.new_tag = "".to_string();
+                    //     }}
+                    //     ui.text_edit_singleline(&mut self.new_tag);    
+                    // });
+                    //     ui.horizontal(|ui| {
+                    //         ui.add_space(24.0);
+                    //         if let Some(tag_ref) = &mut self.tags_search.option {
+                    //             if ui.button("Remove Tag").clicked {
+                    //                 self.tags.retain(|s| s != tag_ref);
+                    //                 tag_ref.clear();
+                    //             }
+                    //             egui::ComboBox::from_label("")
+                    //             .selected_text(format!("{}", tag_ref))
+                    //             .show_ui(ui, |ui| {
+                    //                 for tag in &self.tags {
+                    //                     ui.selectable_value(tag_ref, tag.to_string(), format!("{tag}"));
+                    //                 }
+                    //             });
+                    //         }
+                    //     });
                         ui.horizontal(|ui| {
                             ui.add_space(24.0);
                             ui.label("Filenames with Common Protools AudioSuite Tags will be marked for removal")
@@ -325,15 +390,15 @@ impl eframe::App for TemplateApp {
                         
                     ui.horizontal(|_| {});
                     ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.compare_db, "Compare against database: ");
-                        if let Some(path) = &self.compare_db_path {
+                        ui.checkbox(&mut self.compare_db.enabled, "Compare against database: ");
+                        if let Some(path) = &self.compare_db.option {
                             ui.label(path.split('/').last().unwrap());
                         }
 
                         
                         // ui.text_edit_singleline(&mut self.compare_db_path);
                         if ui.button("Select DB").clicked() {
-                            self.compare_db_path = open_db();
+                            self.compare_db.option = open_db();
                                 
                         }
                     });
@@ -354,26 +419,32 @@ impl eframe::App for TemplateApp {
                         if ui.button("Remove Duplicates").clicked() {
                             remove_dupicates();
                         }
-                        // if ui.button("Reset to Defaults").clicked() {
-                        //     self.reset_to_defaults();
-                        // }
                     });
 
                 }
                 Panel::Order => {
-                    ui.heading("Column in order of Priority and whether it should be DESCending or ASCending.");
-                    ui.label("These are SQL arguments and Google/ChatGPT can help you figure out how to compose them");
-                    ui.horizontal(|_|{});
-                    ui.heading("Examples:");
-                    ui.heading("CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC");
-                    ui.label("Records with 'Audio Files' in the path will be removed over something that does not have it");
-                    ui.horizontal(|_|{});
-                    ui.heading("CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC");
-                    ui.label("Records with 'LIBRARY' (not case sensitive) in the path will be kept over records without");
-                    ui.horizontal(|_|{});
-                    ui.heading("Rules at the top of the list are prioritized over those below");
-                    ui.separator();
+                    if self.help {
+                        ui.heading("Column in order of Priority and whether it should be DESCending or ASCending.");
+                        ui.label("These are SQL arguments and Google/ChatGPT can help you figure out how to compose them");
+                        ui.horizontal(|_|{});
+                        ui.heading("Examples:");
+                        ui.heading("CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC");
+                        ui.label("Records with 'Audio Files' in the path will be removed over something that does not have it");
+                        ui.horizontal(|_|{});
+                        ui.heading("CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC");
+                        ui.label("Records with 'LIBRARY' (not case sensitive) in the path will be kept over records without");
+                        ui.horizontal(|_|{});
+                        ui.heading("Rules at the top of the list are prioritized over those below");
+                        ui.separator();
+                    }
                     
+                    for (index, line) in self.order.iter_mut().enumerate() {
+                        let checked = self.sel_line == Some(index);
+                        if ui.selectable_label(checked, line.clone()).clicked {
+                            self.sel_line = if checked { None } else { Some(index) };
+                        }
+                    }
+                    ui.separator();
                     ui.horizontal(|ui| {
                         if ui.button("Up").clicked() {
                             if let Some(index) = self.sel_line {
@@ -403,17 +474,11 @@ impl eframe::App for TemplateApp {
                             
                             if self.new_line.len() > 0 {
                                 self.order.insert(0, self.new_line.clone());
-                                self.new_line = "".to_string();
+                                self.new_line.clear();
                         }}
                         ui.text_edit_singleline(&mut self.new_line);    
+                        if ui.button("Help").clicked {self.help = !self.help}
                     });
-                    ui.separator();
-                    for (index, line) in self.order.iter_mut().enumerate() {
-                        let checked = self.sel_line == Some(index);
-                        if ui.selectable_label(checked, line.clone()).clicked {
-                            self.sel_line = if checked { None } else { Some(index) };
-                        }
-                    }
                     ui.separator();
                     if ui.button("Text Editor").clicked() {
                         self.order_text = self.order.join("\n");
@@ -423,6 +488,7 @@ impl eframe::App for TemplateApp {
                 }
 
                 Panel:: OrderText => {
+                    if self.help {
                     ui.heading("Column in order of Priority and whether it should be DESCending or ASCending.");
                     ui.label("These are SQL arguments and Google/ChatGPT can help you figure out how to compose them");
                     ui.horizontal(|_|{});
@@ -435,6 +501,7 @@ impl eframe::App for TemplateApp {
                     ui.horizontal(|_|{});
                     ui.heading("Rules at the top of the list are prioritized over those below");
                     ui.separator();
+                    }
 
                     ui.columns(1, |columns| {
                         // columns[0].heading("Duplicate Filename Keeper Priority Order:");
@@ -562,82 +629,6 @@ fn get_columns(db_path: String) -> Vec<String> {
 }
 
 
-
-
-const TJF_DEFAULT_ORDER: &str = r#"CASE WHEN pathname LIKE '%TJF RECORDINGS%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%LIBRARIES%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%SHOWS/Tim Farrell%' THEN 1 ELSE 0 END ASC
-CASE WHEN Description IS NOT NULL AND Description != '' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC
-CASE WHEN pathname LIKE '%RECORD%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%CREATED SFX%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%CREATED FX%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%/LIBRARY%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%LIBRARY/%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%SIGNATURE%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%PULLS%' THEN 0 ELSE 1 END ASC
-CASE WHEN pathname LIKE '%EDIT%' THEN 1 ELSE 0 END ASC
-CASE WHEN pathname LIKE '%MIX%' THEN 1 ELSE 0 END ASC
-CASE WHEN pathname LIKE '%SESSION%' THEN 1 ELSE 0 END ASC
-duration DESC
-channels DESC
-sampleRate DESC
-bitDepth DESC
-BWDate ASC
-scannedDate ASC
-"#;
-
-
-
-
-const DEFAULT_TAGS: &str = r#"-1eqa_ 
--6030_  
--7eqa_ 
--A2sA_  
--A44m_  
--A44s_  
--Alt7S_  
--ASMA_  
--AVrP_  
--AVrT_  
--AVSt_ 
--DEC4_  
--Delays_  
--Dn_ 
--DUPL_ 
--DVerb_  
--GAIN_  
--M2DN_  
--NORM_ 
--NYCT_  
--PiSh    
--PnT2_  
--PnTPro_  
--ProQ2_  
--PSh_  
--Reverse_  
--RVRS_  
--RING_  
--RX7Cnct_  
--spce_  
--TCEX_
--TiSh_
--TmShft_ 
--VariFi_
--VlhllVV_ 
--VSPD_
--VitmnMn_ 
--VtmnStr_ 
--X2mA_ 
--X2sA_ 
--XForm_
--Z2N5_
--Z2S5_
--Z4n2_
--ZXN5_  
-"#;
-
 const DEFAULT_TAGS_VEC: [&str; 44] = [
     "-6030_", 
     "-7eqa_",
@@ -685,7 +676,73 @@ const DEFAULT_TAGS_VEC: [&str; 44] = [
     "-ZXN5_", 
 ];
 
-const DEFAULT_ORDER_VEC: [&str; 22] = [
+const TJF_TAGS_VEC: [&str; 48] = [
+    "-6030_", 
+    "-7eqa_",
+    "-A2sA_", 
+    "-A44m_", 
+    "-A44s_", 
+    "-Alt7S_", 
+    "-ASMA_", 
+    "-AVrP_", 
+    "-AVrT_", 
+    "-AVSt_", 
+    "-DEC4_", 
+    "-Delays_", 
+    "-Dn_",
+    "-DUPL_",
+    "-DVerb_", 
+    "-GAIN_", 
+    "-M2DN_", 
+    "-NORM_",
+    "-NYCT_", 
+    "-PiSh_", 
+    "-PnT2_", 
+    "-PnTPro_", 
+    "-ProQ2_", 
+    "-PSh_", 
+    "-Reverse_", 
+    "-RVRS_", 
+    "-RING_", 
+    "-RX7Cnct_", 
+    "-spce_", 
+    "-TCEX_", 
+    "-TiSh_", 
+    "-TmShft_", 
+    "-VariFi_", 
+    "-VlhllVV_", 
+    "-VSPD_",
+    "-VitmnMn_", 
+    "-VtmnStr_", 
+    "-X2mA_", 
+    "-X2sA_", 
+    "-XForm_",
+    "-Z2N5_",
+    "-Z2S5_",
+    "-Z4n2_",
+    "-ZXN5_",
+    ".new.",
+    ".aif.",
+    ".mp3.",
+    ".wav.", 
+];
+
+const DEFAULT_ORDER_VEC: [&str; 12] = [
+
+    "CASE WHEN Description IS NOT NULL AND Description != '' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC",
+    "CASE WHEN pathname LIKE '%LIBRARIES%' THEN 0 ELSE 1 END ASC",  
+    "CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%/LIBRARY%' THEN 0 ELSE 1 END ASC",
+    "CASE WHEN pathname LIKE '%LIBRARY/%' THEN 0 ELSE 1 END ASC",
+    "duration DESC",
+    "channels DESC",
+    "sampleRate DESC",
+    "bitDepth DESC",
+    "BWDate ASC",
+    "scannedDate ASC",
+];
+const TJF_ORDER_VEC: [&str; 22] = [
     "CASE WHEN pathname LIKE '%TJF RECORDINGS%' THEN 0 ELSE 1 END ASC",
     "CASE WHEN pathname LIKE '%LIBRARIES%' THEN 0 ELSE 1 END ASC",
     "CASE WHEN pathname LIKE '%SHOWS/Tim Farrell%' THEN 1 ELSE 0 END ASC",
