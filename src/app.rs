@@ -14,9 +14,8 @@ use std::path::Path;
 use std::error::Error;
 // use terminal_size::{Width, terminal_size};
 // use regex::Regex;
-// use ordered_float::OrderedFloat;
 use crate::assets::*;
-
+use crate::processing::*;
 
 
 
@@ -24,14 +23,16 @@ use serde::Deserialize;
 
 #[derive(Default, serde::Deserialize, serde::Serialize)]
 #[serde(default)] 
-struct Config {
-    search: bool,
-    option: Option<String>,
-    list: Vec<String>,
+pub struct Config {
+    pub search: bool,
+    pub option: Option<String>,
+    pub list: Vec<String>,
     #[serde(skip)]
-    status: String,
+    pub status: String,
     #[serde(skip)]
-    records: HashSet<FileRecord>,
+    pub records: HashSet<FileRecord>,
+    #[serde(skip)]
+    pub working: bool,
 }
 
 impl Config {
@@ -42,6 +43,7 @@ impl Config {
             list: Vec::new(),
             status: String::new(),
             records: HashSet::new(),
+            working: false,
 
         }
     }
@@ -52,27 +54,18 @@ impl Config {
             option: Some(o.to_string()),
             status: String::new(),
             records: HashSet::new(),
-
-        }
-    }
-    fn new_list(on: bool, o: &str, l: Vec<String>) -> Self {
-        Self {
-            search: on,
-            list: l,
-            option: Some(o.to_string()),
-            status: String::new(),
-            records: HashSet::new(),
+            working: false,
 
         }
     }
     
 }
 
-#[derive(Hash, Eq, PartialEq, Clone, Debug)]
-struct FileRecord {
-    id: usize,
-    filename: String,
-    duration: String,
+#[derive(Hash, Eq, PartialEq, Clone, Debug,)]
+pub struct FileRecord {
+    pub id: usize,
+    pub filename: String,
+    pub duration: String,
 }
 
 /// We derive Deserialize/Serialize so we can persist app state on shutdown.
@@ -116,6 +109,8 @@ pub struct TemplateApp {
     replace_safety: bool,
     #[serde(skip)] // This how you opt-out of serialization of a field
     count: usize,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    gather_dupes: bool,
 
 }    
 
@@ -153,6 +148,7 @@ impl Default for TemplateApp {
             help: false,
             replace_safety: false,
             count: 0,
+            gather_dupes: false,
         };
         app.tags.list = default_tags();
         app.main.list = default_order();
@@ -273,7 +269,7 @@ impl eframe::App for TemplateApp {
                         // ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
                         // ui.add_space(16.0);
                         // ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
-                        ui.selectable_value(&mut self.my_panel, Panel::Find, "Fast Find and Replace",);
+                        ui.selectable_value(&mut self.my_panel, Panel::Find, "Find and Replace",);
                         ui.add_space(16.0);
     
                     });
@@ -320,7 +316,7 @@ impl eframe::App for TemplateApp {
 
             match self.my_panel {
                 Panel::Find => {
-                    ui.heading("Fast Find and Replace");
+                    ui.heading("Find and Replace");
                     ui.label("Note: Search is Case Sensitive");
                     ui.separator();
                     ui.horizontal(|ui| {
@@ -342,6 +338,9 @@ impl eframe::App for TemplateApp {
                     ui.label("Dirty Records are audio files with metadata that is not embedded");
                     ui.separator();
         
+                    if self.find.is_empty() {
+                        return;
+                    }
                     if ui.button("Process").clicked() {
                         if let Some(path) = &self.main.option {
                             self.replace_safety = true;
@@ -352,6 +351,10 @@ impl eframe::App for TemplateApp {
                         
                     }
                     if self.replace_safety {
+                        // if let Some(path) = &self.main.option {
+                        //     self.count = smreplace_get(path.clone(), &mut self.find,  &mut self.column);
+
+                        // }
                         ui.label(format!("Found {} records matching '{}' in {} of SM database: {}", self.count, self.find, self.column, db_name));
                         if self.count == 0 {return;}
                         ui.label(format!("Replace with '{}'?", self.replace));
@@ -380,33 +383,47 @@ impl eframe::App for TemplateApp {
                     ui.heading("Search for Duplicate Records");
         
                     ui.checkbox(&mut self.main.search, "Basic Duplicate Filename Search");
-              
-                    ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        ui.checkbox(&mut self.group.search, "Group Duplicate Filename Search by: ");
-                        if let Some(group) = &mut self.group.option {              
-                            // ui.radio_value(&mut self.group, GroupBy::Show, "Show");
-                            // ui.radio_value(&mut self.group, GroupBy::Library, "Library");
-                            // ui.radio_value(&mut self.group, GroupBy::Other, "Other: ");
-                            combo_box(ui, "group", group, &self.group.list);
-                           
-                        }
                         
-                    });
-                    ui.horizontal(|ui| {
-                        ui.add_space(44.0);
-                        ui.label("Records without group entry: ");
-                        ui.radio_value(&mut self.group_null, false, "Skip/Ignore");
-                        ui.radio_value(&mut self.group_null, true, "Process Together");
-                        // ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
-                    });
-                    ui.horizontal(|_| {});
-                    ui.checkbox(&mut self.deep.search, "Deep Dive Duplicates Search (Slow)");
-                    ui.horizontal( |ui| {
-                        ui.add_space(24.0);
-                        ui.label("Filenames ending in .#, .#.#.#, or .M will be examined as possible duplicates");
-                    });
-                    ui.horizontal(|_| {});
+                        //GROUP GROUP GROUP GROUP
+                        ui.horizontal(|ui| {
+                            ui.add_space(24.0);
+                            ui.checkbox(&mut self.group.search, "Group Duplicate Filename Search by: ");
+                            if let Some(group) = &mut self.group.option {              
+                                // ui.radio_value(&mut self.group, GroupBy::Show, "Show");
+                                // ui.radio_value(&mut self.group, GroupBy::Library, "Library");
+                                // ui.radio_value(&mut self.group, GroupBy::Other, "Other: ");
+                                combo_box(ui, "group", group, &self.group.list);
+                            
+                            }
+                            
+                        });
+                        ui.horizontal(|ui| {
+                            ui.add_space(44.0);
+                            ui.label("Records without group entry: ");
+                            ui.radio_value(&mut self.group_null, false, "Skip/Ignore");
+                            ui.radio_value(&mut self.group_null, true, "Process Together");
+                            // ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
+                        });
+                        ui.horizontal( |ui| {
+                            if self.group.working {ui.spinner();}
+                            ui.label(self.group.status.clone());
+
+                        });
+
+                        //DEEP DIVE DEEP DIVE DEEP DIVE
+                        ui.checkbox(&mut self.deep.search, "Deep Dive Duplicates Search (Slow)");
+                        ui.horizontal( |ui| {
+                            ui.add_space(24.0);
+                            ui.label("Filenames ending in .#, .#.#.#, or .M will be examined as possible duplicates");
+                        });
+                        ui.horizontal( |ui| {
+                            if self.deep.working {ui.spinner();}
+                            ui.label(self.deep.status.clone());
+
+                        });
+                        ui.separator();
+
+                    //TAGS TAGS TAGS TAGS
                     ui.checkbox(&mut self.tags.search, "Search for Records with AudioSuite Tags");
 
 
@@ -415,7 +432,14 @@ impl eframe::App for TemplateApp {
                             ui.label("Filenames with Common Protools AudioSuite Tags will be marked for removal")
                         });
                         
-                    ui.horizontal(|_| {});
+                        ui.horizontal(|ui| {
+                            if self.tags.working {ui.spinner();}
+                            ui.label(self.tags.status.clone());
+
+                        });
+                        ui.separator();
+
+                    //COMPARE COMPARE COMPARE COMPARE
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.compare_db.search, "Compare against database: ");
                         if let Some(path) = &self.compare_db.option {
@@ -430,23 +454,69 @@ impl eframe::App for TemplateApp {
                         // }
                     });
                    
-                    ui.horizontal(|ui| {
-                        ui.add_space(24.0);
-                        ui.label("Filenames from Target Database found in Comparison Database will be Marked for Removal");
-                    });
+                        ui.horizontal(|ui| {
+                            ui.add_space(24.0);
+                            ui.label("Filenames from Target Database found in Comparison Database will be Marked for Removal");
+                        });
+                        ui.label(self.compare_db.status.clone());
+                        ui.separator();
 
                     ui.horizontal(|_| {});
                     ui.checkbox(&mut self.safe, "Create Safety Database of Thinned Records");
                     ui.checkbox(&mut self.dupes_db, "Create Database of Duplicate Records");
                     ui.separator();
+
+                    ui.horizontal( |ui| {});
+                    
                     ui.horizontal(|ui| {
-                        if ui.button("Search for Duplicates").clicked() {
-                            gather_dupicates();
+                        if  ui.input(|i| i.modifiers.alt ) {
+                            if ui.button("Search and Remove Duplicates").clicked() {}
+                        } else {
+                            if ui.button("Search for Duplicates").clicked() {
+                                // self.gather_dupes = true;
+                                gather_duplicates(&mut self.main, &mut self.group, &mut self.deep, &mut self.tags, &mut self.compare_db);
+                            }
+
                         }
-                        if ui.button("Remove Duplicates").clicked() {
-                            remove_dupicates();
+                        if self.main.records.len() > 0 {
+
+                            // button(ui, "Remove Duplicates", remove_duplicates);
+
+                            if ui.button("Remove Duplicates").clicked() {
+                                remove_duplicates();
+                            }
                         }
                     });
+                    ui.horizontal( |ui| {
+                        if self.main.working {ui.spinner();}
+                        ui.label(self.main.status.clone());
+
+                    });
+                    if self.main.working{
+                        ui.add( egui::ProgressBar::new(0.0)
+                                // .text("progress")
+                                .desired_height(4.0)
+                            );
+                    }
+
+                    // if self.gather_dupes {
+                    //     let source_db_path = self.main.option.as_ref().unwrap().clone();
+                    //     let mut conn = Connection::open(&source_db_path).unwrap();
+
+                    //     if self.tags.search {
+                    //         self.tags.working = true;
+                    //         self.tags.status = format!{"Found {} records with matching tags", self.tags.records.len()};
+                    //         gather_filenames_with_tags(&mut conn, &mut self.tags).ok();
+                    //         self.tags.status = format!{"Found {} records with matching tags", self.tags.records.len()};
+                    //         self.main.records.extend(self.tags.records.clone());
+                    //         self.tags.working = false;
+                    //     }
+
+
+
+                    //     self.gather_dupes = false;
+                    // }
+
 
                 }
                 Panel::Order => {
@@ -595,28 +665,6 @@ pub fn order_toolbar(ui: &mut egui::Ui, app: &mut TemplateApp) {
 }
 
 
-fn smreplace_get(db_path: String, find: &mut String, column: &mut String ) -> usize {
-    let conn: Connection = Connection::open(db_path).unwrap(); 
-    let table = "justinmetadata";
-
-    let search_query = format!("SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?1", table, column);
-    // Prepare the SQL query with the search text
-    let stmt = conn.prepare(search_query.as_str()).ok();
-    let count = stmt.expect("Failed to prepare statement").query_row([format!("%{}%", find)], |row| row.get(0)).unwrap();
-    count
-}
-
-fn smreplace_process(db_path: String, find: &mut String, replace: &mut String, column: &mut String, dirty: bool ) {
-    let conn: Connection = Connection::open(db_path).unwrap(); 
-    let table = "justinmetadata";
-    let dirty_text = if dirty { ", _Dirty = 1" } else { "" };
-   
-    let replace_query = format!("UPDATE {} SET {} = REPLACE({}, '{}', '{}'){} WHERE {} LIKE '%{}%'", table, column, column, find, replace, dirty_text, column, find);
-    conn.execute(replace_query.as_str(), []).ok();
-
-}
-
-
 
 
 
@@ -644,193 +692,3 @@ fn smreplace_process(db_path: String, find: &mut String, replace: &mut String, c
 //     conn.execute(replace_query.as_str(), [])?;
 //     Ok(())
 // }
-
-fn gather_dupicates() {}
-fn remove_dupicates() {}
-
-fn open_db() -> Option<String> {
-    if let Some(path) = rfd::FileDialog::new().pick_file() {
-        let db_path = path.display().to_string();
-        if db_path.ends_with(".sqlite") {return Some(db_path);}
-    }    
-    None
-}
-
-fn get_db_size(db_path: String) -> usize {
-    let conn = Connection::open(db_path).unwrap();
-     let count: usize = conn.query_row(
-         "SELECT COUNT(*) FROM justinmetadata",
-         [],
-         |row| row.get(0) 
-     ).unwrap();
-     count
-}
-
-fn get_columns(db_path: String) -> Vec<String> {
-    let conn = Connection::open(db_path).unwrap();
-    let mut stmt = conn.prepare("PRAGMA table_info(justinmetadata);").unwrap();
-
-    // Execute the query and collect the column names into a Vec<String>
-    let mut column_names: Vec<String> = stmt.query_map([], |row| {
-        Ok(row.get::<_, String>(1)?) // The 1st index corresponds to the "name" column
-    }).unwrap()
-    .filter_map(Result::ok) // Filter out any errors
-    .filter(|c| !c.starts_with("_"))
-    .collect();
-
-
-    column_names.sort();
-    column_names
-}
-
-fn default_tags() -> Vec<String> {
-const DEFAULT_TAGS_VEC: [&str; 44] = [
-    "-6030_", 
-    "-7eqa_",
-    "-A2sA_", 
-    "-A44m_", 
-    "-A44s_", 
-    "-Alt7S_", 
-    "-ASMA_", 
-    "-AVrP_", 
-    "-AVrT_", 
-    "-AVSt_", 
-    "-DEC4_", 
-    "-Delays_", 
-    "-Dn_",
-    "-DUPL_",
-    "-DVerb_", 
-    "-GAIN_", 
-    "-M2DN_", 
-    "-NORM_",
-    "-NYCT_", 
-    "-PiSh_", 
-    "-PnT2_", 
-    "-PnTPro_", 
-    "-ProQ2_", 
-    "-PSh_", 
-    "-Reverse_", 
-    "-RVRS_", 
-    "-RING_", 
-    "-RX7Cnct_", 
-    "-spce_", 
-    "-TCEX_", 
-    "-TiSh_", 
-    "-TmShft_", 
-    "-VariFi_", 
-    "-VlhllVV_", 
-    "-VSPD_",
-    "-VitmnMn_", 
-    "-VtmnStr_", 
-    "-X2mA_", 
-    "-X2sA_", 
-    "-XForm_",
-    "-Z2N5_",
-    "-Z2S5_",
-    "-Z4n2_",
-    "-ZXN5_", 
-];
-DEFAULT_TAGS_VEC.map(|s| s.to_string()).to_vec()
-
-}
-fn tjf_tags() -> Vec<String> {
-const TJF_TAGS_VEC: [&str; 48] = [
-    "-6030_", 
-    "-7eqa_",
-    "-A2sA_", 
-    "-A44m_", 
-    "-A44s_", 
-    "-Alt7S_", 
-    "-ASMA_", 
-    "-AVrP_", 
-    "-AVrT_", 
-    "-AVSt_", 
-    "-DEC4_", 
-    "-Delays_", 
-    "-Dn_",
-    "-DUPL_",
-    "-DVerb_", 
-    "-GAIN_", 
-    "-M2DN_", 
-    "-NORM_",
-    "-NYCT_", 
-    "-PiSh_", 
-    "-PnT2_", 
-    "-PnTPro_", 
-    "-ProQ2_", 
-    "-PSh_", 
-    "-Reverse_", 
-    "-RVRS_", 
-    "-RING_", 
-    "-RX7Cnct_", 
-    "-spce_", 
-    "-TCEX_", 
-    "-TiSh_", 
-    "-TmShft_", 
-    "-VariFi_", 
-    "-VlhllVV_", 
-    "-VSPD_",
-    "-VitmnMn_", 
-    "-VtmnStr_", 
-    "-X2mA_", 
-    "-X2sA_", 
-    "-XForm_",
-    "-Z2N5_",
-    "-Z2S5_",
-    "-Z4n2_",
-    "-ZXN5_",
-    ".new.",
-    ".aif.",
-    ".mp3.",
-    ".wav.", 
-];
-TJF_TAGS_VEC.map(|s| s.to_string()).to_vec()
-}
-
-fn default_order() -> Vec<String> {
-const DEFAULT_ORDER_VEC: [&str; 12] = [
-
-    "CASE WHEN Description IS NOT NULL AND Description != '' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC",
-    "CASE WHEN pathname LIKE '%LIBRARIES%' THEN 0 ELSE 1 END ASC",  
-    "CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%/LIBRARY%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%LIBRARY/%' THEN 0 ELSE 1 END ASC",
-    "duration DESC",
-    "channels DESC",
-    "sampleRate DESC",
-    "bitDepth DESC",
-    "BWDate ASC",
-    "scannedDate ASC",
-];
-DEFAULT_ORDER_VEC.map(|s| s.to_string()).to_vec()
-}
-
-
-fn tjf_order() -> Vec<String> {
-const TJF_ORDER_VEC: [&str; 22] = [
-    "CASE WHEN pathname LIKE '%TJF RECORDINGS%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%LIBRARIES%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%SHOWS/Tim Farrell%' THEN 1 ELSE 0 END ASC",
-    "CASE WHEN Description IS NOT NULL AND Description != '' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC",
-    "CASE WHEN pathname LIKE '%RECORD%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%CREATED SFX%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%CREATED FX%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%/LIBRARY%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%LIBRARY/%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%SIGNATURE%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%PULLS%' THEN 0 ELSE 1 END ASC",
-    "CASE WHEN pathname LIKE '%EDIT%' THEN 1 ELSE 0 END ASC",
-    "CASE WHEN pathname LIKE '%MIX%' THEN 1 ELSE 0 END ASC",
-    "CASE WHEN pathname LIKE '%SESSION%' THEN 1 ELSE 0 END ASC",
-    "duration DESC",
-    "channels DESC",
-    "sampleRate DESC",
-    "bitDepth DESC",
-    "BWDate ASC",
-    "scannedDate ASC",
-];
-    TJF_ORDER_VEC.map(|s| s.to_string()).to_vec()
-}
