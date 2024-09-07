@@ -664,31 +664,3 @@ pub fn order_toolbar(ui: &mut egui::Ui, app: &mut TemplateApp) {
     });
 }
 
-
-
-
-
-// fn smreplace_get(db_path: String, find: String, replace: String, column: String ) -> usize {
-//     let conn: Connection = Connection::open(db_path).unwrap(); 
-//     let table = "justinmetadata";
-
-//     let search_query = format!("SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?1", table, column);
-//     // Prepare the SQL query with the search text
-//     let mut stmt = conn.prepare(search_query.as_str()).ok();
-//     let count: usize = stmt.query_row([format!("%{}%", find)], |row| row.get(0)).unwrap();
-
-//     println!("Found {} records matching '{}' in {} of SM database: {}", count, find, column, db_path);
-//     if config.prompt {
-//         println!("Replace with '{}'?  Type 'yes' to confirm", replace);
-//         let mut user_input = String::new();
-//         io::stdin().read_line(&mut user_input)?;
-//         if user_input.trim().to_lowercase() != "yes" {
-//             println!("Replace aborted.");
-//             return Ok(());
-//         }
-//     }
-//     println!("Replacing '{}' with '{}' in {} of SM database: {}", find, replace, column, db_path);
-//     let replace_query = format!("UPDATE {} SET {} = REPLACE({}, '{}', '{}') WHERE {} LIKE '%{}%'", table, column, column, find, replace, column, find);
-//     conn.execute(replace_query.as_str(), [])?;
-//     Ok(())
-// }

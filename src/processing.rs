@@ -83,12 +83,13 @@ pub fn gather_duplicates(main: &mut Config, group: &mut Config, deep: &mut Confi
     // }
 
     if tags.search {
+        main.status = format!("Searching for tags");
         tags.working = true;
         tags.status = format!{"Found {} records with matching tags", tags.records.len()};
         gather_filenames_with_tags(&mut conn, tags).ok();
+        tags.working = false;
         tags.status = format!{"Found {} records with matching tags", tags.records.len()};
         main.records.extend(tags.records.clone());
-        tags.working = false;
     }
     
 
@@ -101,11 +102,11 @@ pub fn gather_duplicates(main: &mut Config, group: &mut Config, deep: &mut Confi
 
 
     if main.records.is_empty() {
-        main.status = format!("No files to delete.");
+        main.status = format!("No records marked for removal.");
        
     }
 
-    print!("Found {} total records to delete. ", main.records.len());
+    main.status = format!("Marked {} total records for removal.", main.records.len());
 
 }
 
