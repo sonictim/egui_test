@@ -2,6 +2,7 @@
 // use egui::RadioButton;
 use eframe::egui::{self, FontId, RichText, TextStyle, WidgetText};
 
+use eframe::glow::BLUE;
 use egui::{menu::menu_button, ModifierNames};
 use rusqlite::{Connection, Result};
 use std::collections::HashSet;
@@ -83,6 +84,7 @@ pub struct TemplateApp {
     column: String,
     find: String,
     replace: String,
+    dirty: bool,
 
     main: Config,
     group: Config,
@@ -112,6 +114,8 @@ pub struct TemplateApp {
     help: bool,
     #[serde(skip)] // This how you opt-out of serialization of a field
     replace_safety: bool,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    count: usize,
 
 }    
 
@@ -129,6 +133,7 @@ impl Default for TemplateApp {
             column: "Filepath".to_owned(),
             find: String::new(),
             replace: String::new(),
+            dirty: true,
             main: Config::new(true),
             group: Config::new_option(false, "Show"),
             group_null: false,
@@ -147,6 +152,7 @@ impl Default for TemplateApp {
             order_text: String::new(),
             help: false,
             replace_safety: false,
+            count: 0,
         };
         app.tags.list = default_tags();
         app.main.list = default_order();
@@ -208,6 +214,7 @@ impl eframe::App for TemplateApp {
             // The top panel is often a good place for a menu bar:
             egui::menu::bar(ui, |ui| {
                 // NOTE: no File->Quit on web pages!
+                
                 let is_web = cfg!(target_arch = "wasm32");
                 if !is_web {
                     ui.menu_button("File", |ui| {
@@ -220,6 +227,12 @@ impl eframe::App for TemplateApp {
                             }
                         }
                         if ui.button("Close Database").clicked() {ui.close_menu(); self.main.option = None;}
+                        ui.separator();
+                        if ui.button("Restore Defaults").clicked() {ui.close_menu(); self.reset_to_defaults(self.main.option.clone())}
+                        if  ui.input(|i| i.modifiers.alt ) {
+                            if ui.button("TJF Defaults").clicked() {ui.close_menu(); self.reset_to_TJFdefaults(self.main.option.clone())}
+                        }
+                        ui.separator();
                         if ui.button("Quit").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
@@ -232,13 +245,12 @@ impl eframe::App for TemplateApp {
                         
                     // });
                     // ui.add_space(16.0);
-                    ui.menu_button("Config", |ui| {
-                        if ui.button("Restore Defaults").clicked() {ui.close_menu(); self.reset_to_defaults(self.main.option.clone())}
-                        if  ui.input(|i| i.modifiers.alt ) {
-                            if ui.button("TJF Defaults").clicked() {ui.close_menu(); self.reset_to_TJFdefaults(self.main.option.clone())}
-                        }
+                    ui.menu_button("View", |ui| {
+                        if ui.button("Duplicates Search").clicked() {ui.close_menu(); self.my_panel = Panel::Duplicates}
+                        if ui.button("Find & Replace").clicked() {ui.close_menu(); self.my_panel = Panel::Find}
+                        ui.separator();
                         if ui.button("Duplicate Search Logic").clicked() {ui.close_menu(); self.my_panel = Panel::Order}
-                            if ui.button("Tag Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Tags}
+                        if ui.button("Tag Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Tags}
 
                     });
                     // ui.menu_button("View", |ui| {
@@ -246,21 +258,28 @@ impl eframe::App for TemplateApp {
                     //     if ui.button("Find & Replace Text").clicked() {ui.close_menu(); self.my_panel = Panel::Find}
                         
                     // });
-                    ui.add_space(48.0);
+
                     // ui.add_space(16.0);
+                    ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
+
+                        egui::widgets::global_dark_light_mode_buttons(ui);
+                    });
+                    // ui.add_space(48.0);
                     egui::menu::bar(ui, |ui| {
                         
-                        ui.selectable_value(&mut self.my_panel, Panel::Duplicates, "Duplicate Filename Search",);
+                        ui.selectable_value(&mut self.my_panel, Panel::Duplicates, RichText::new("Duplicate Filename Search"),);
+                        
                         ui.add_space(16.0);
                         // ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
                         // ui.add_space(16.0);
                         // ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
-                        ui.selectable_value(&mut self.my_panel, Panel::Find, "Find/Replace Text in database",);
+                        ui.selectable_value(&mut self.my_panel, Panel::Find, "Fast Find and Replace",);
                         ui.add_space(16.0);
     
                     });
                 }
-
+                
+               
             });
 
             
@@ -285,9 +304,11 @@ impl eframe::App for TemplateApp {
                     return;
                 }
                 ui.horizontal(|_| {});
+                let mut db_name = "";
                 ui.vertical_centered(|ui| {
                     if let Some(path) = &self.main.option {
-                        ui.heading(RichText::new(path.split('/').last().unwrap()).size(24.0).strong());
+                        db_name = path.split('/').last().unwrap();
+                        ui.heading(RichText::new(path.split('/').last().unwrap()).size(24.0).strong().extra_letter_spacing(5.0));
                     }
                     ui.label(format!("{} records", self.total_records));
                     
@@ -299,8 +320,9 @@ impl eframe::App for TemplateApp {
 
             match self.my_panel {
                 Panel::Find => {
-                    ui.heading("Find and Replace");
-        
+                    ui.heading("Fast Find and Replace");
+                    ui.label("Note: Search is Case Sensitive");
+                    ui.separator();
                     ui.horizontal(|ui| {
                         ui.label("Find Text: ");
                         ui.text_edit_singleline(&mut self.find);
@@ -313,17 +335,46 @@ impl eframe::App for TemplateApp {
                     });
                     ui.horizontal(|ui| {
                         ui.label("in Column: ");
-                        // ui.text_edit_singleline(&mut self.column);
-                        // ui.radio_value(&mut self.column, "FilePath".to_string(), "File Path");
-                        // ui.radio_value(&mut self.column, format!("{}",&mut self.column), "Other: ");
                         combo_box(ui, "find_column", &mut self.column, &self.group.list);
                     });
+                    ui.separator();
+                    ui.checkbox(&mut self.dirty,"Mark Records as Dirty?");
+                    ui.label("Dirty Records are audio files with metadata that is not embedded");
+                    ui.separator();
         
-                    button(ui, "Process", ||{ smreplace(ui, self);});
-                    // if self.replace_safety {
-                    //     ui.heading("This is NOT Undoable.  Are you Sure?");
+                    if ui.button("Process").clicked() {
+                        if let Some(path) = &self.main.option {
+                            self.replace_safety = true;
+                            self.count = smreplace_get(path.clone(), &mut self.find,  &mut self.column);
+
+                        }
                         
-                    // }
+                        
+                    }
+                    if self.replace_safety {
+                        ui.label(format!("Found {} records matching '{}' in {} of SM database: {}", self.count, self.find, self.column, db_name));
+                        if self.count == 0 {return;}
+                        ui.label(format!("Replace with '{}'?", self.replace));
+                        ui.label(format!("This is NOT undoable"));
+                        ui.separator();
+                        ui.horizontal(|ui| {
+
+                            if ui.button("Proceed").clicked() {
+                                if let Some(path) = &self.main.option {
+                                    smreplace_process(path.clone(), &mut self.find, &mut self.replace, &mut self.column, self.dirty);
+                                }
+                                self.replace_safety = false;
+                            }
+                            if ui.button("Cancel").clicked() {
+                                self.count = 0;
+                                self.replace_safety = false;
+                            }
+                        });
+                    }
+                    else if self.count > 0 {
+                        ui.label(format!("{} records replaced", self.count));
+                    }
+                        
                 }
                 Panel::Duplicates => {
                     ui.heading("Search for Duplicate Records");
@@ -544,35 +595,55 @@ pub fn order_toolbar(ui: &mut egui::Ui, app: &mut TemplateApp) {
 }
 
 
-fn smreplace(ui: &mut egui::Ui, app: &mut TemplateApp) -> Result<(), rusqlite::Error> {
-    if let Some(db_path) = &app.main.option {
-        let db_name = db_path.split('/').last().unwrap();
-        let conn = Connection::open(db_path)?; 
-        let table = "justinmetadata";
-        let mut proceed = false;
-        
-        let search_query = format!("SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?1", table, app.column);
-        let mut stmt = conn.prepare(search_query.as_str())?;
-        let count: usize = stmt.query_row([format!("%{}%", app.find)], |row| row.get(0))?;
-    
-        ui.label(format!("Found {} records matching '{}' in {} of SM database: {}", count, app.find, app.column, db_name));
-    
-        ui.label(format!("Replace with '{}'?", app.replace));
-        ui.heading(format!("This is NOT undoable!"));
-        ui.horizontal(|ui| {
-            button(ui, "Proceed", ||proceed=true);
-            button(ui, "Canel", ||proceed = false);
-        });
-      
-        if proceed {
-            println!("Replacing '{}' with '{}' in {} of SM database: {}", app.find, app.replace, app.column, db_name);
-            let replace_query = format!("UPDATE {} SET {} = REPLACE({}, '{}', '{}') WHERE {} LIKE '%{}%'", table, app.column, app.column, app.find, app.replace, app.column, app.find);
-            conn.execute(replace_query.as_str(), [])?;
-        }
-    }
-    Ok(())
+fn smreplace_get(db_path: String, find: &mut String, column: &mut String ) -> usize {
+    let conn: Connection = Connection::open(db_path).unwrap(); 
+    let table = "justinmetadata";
+
+    let search_query = format!("SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?1", table, column);
+    // Prepare the SQL query with the search text
+    let stmt = conn.prepare(search_query.as_str()).ok();
+    let count = stmt.expect("Failed to prepare statement").query_row([format!("%{}%", find)], |row| row.get(0)).unwrap();
+    count
+}
+
+fn smreplace_process(db_path: String, find: &mut String, replace: &mut String, column: &mut String, dirty: bool ) {
+    let conn: Connection = Connection::open(db_path).unwrap(); 
+    let table = "justinmetadata";
+    let dirty_text = if dirty { ", _Dirty = 1" } else { "" };
+   
+    let replace_query = format!("UPDATE {} SET {} = REPLACE({}, '{}', '{}'){} WHERE {} LIKE '%{}%'", table, column, column, find, replace, dirty_text, column, find);
+    conn.execute(replace_query.as_str(), []).ok();
 
 }
+
+
+
+
+
+// fn smreplace_get(db_path: String, find: String, replace: String, column: String ) -> usize {
+//     let conn: Connection = Connection::open(db_path).unwrap(); 
+//     let table = "justinmetadata";
+
+//     let search_query = format!("SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?1", table, column);
+//     // Prepare the SQL query with the search text
+//     let mut stmt = conn.prepare(search_query.as_str()).ok();
+//     let count: usize = stmt.query_row([format!("%{}%", find)], |row| row.get(0)).unwrap();
+
+//     println!("Found {} records matching '{}' in {} of SM database: {}", count, find, column, db_path);
+//     if config.prompt {
+//         println!("Replace with '{}'?  Type 'yes' to confirm", replace);
+//         let mut user_input = String::new();
+//         io::stdin().read_line(&mut user_input)?;
+//         if user_input.trim().to_lowercase() != "yes" {
+//             println!("Replace aborted.");
+//             return Ok(());
+//         }
+//     }
+//     println!("Replacing '{}' with '{}' in {} of SM database: {}", find, replace, column, db_path);
+//     let replace_query = format!("UPDATE {} SET {} = REPLACE({}, '{}', '{}') WHERE {} LIKE '%{}%'", table, column, column, find, replace, column, find);
+//     conn.execute(replace_query.as_str(), [])?;
+//     Ok(())
+// }
 
 fn gather_dupicates() {}
 fn remove_dupicates() {}
