@@ -14,6 +14,7 @@ use std::error::Error;
 // use terminal_size::{Width, terminal_size};
 // use regex::Regex;
 // use ordered_float::OrderedFloat;
+use crate::assets::*;
 
 
 
@@ -109,6 +110,8 @@ pub struct TemplateApp {
     order_text: String,
     #[serde(skip)] // This how you opt-out of serialization of a field
     help: bool,
+    #[serde(skip)] // This how you opt-out of serialization of a field
+    replace_safety: bool,
 
 }    
 
@@ -143,6 +146,7 @@ impl Default for TemplateApp {
             sel_line: None,
             order_text: String::new(),
             help: false,
+            replace_safety: false,
         };
         app.tags.list = default_tags();
         app.main.list = default_order();
@@ -185,6 +189,8 @@ impl TemplateApp {
         }
     }
 }
+
+
 
 impl eframe::App for TemplateApp {
     /// Called by the frame work to save state before shutdown.
@@ -310,39 +316,29 @@ impl eframe::App for TemplateApp {
                         // ui.text_edit_singleline(&mut self.column);
                         // ui.radio_value(&mut self.column, "FilePath".to_string(), "File Path");
                         // ui.radio_value(&mut self.column, format!("{}",&mut self.column), "Other: ");
-                        egui::ComboBox::from_label("")
-                            .selected_text(format!("{}", self.column))
-                            .show_ui(ui, |ui| {
-                                for col in &self.group.list {
-                                    ui.selectable_value(&mut self.column, col.to_string(), format!("{col}"));
-                                }
-                        });
+                        combo_box(ui, "find_column", &mut self.column, &self.group.list);
                     });
         
-                    if ui.button("Process").clicked() {
-                        smreplace();
-                    }
+                    button(ui, "Process", ||{ smreplace(ui, self);});
+                    // if self.replace_safety {
+                    //     ui.heading("This is NOT Undoable.  Are you Sure?");
+                        
+                    // }
                 }
                 Panel::Duplicates => {
                     ui.heading("Search for Duplicate Records");
         
                     ui.checkbox(&mut self.main.search, "Basic Duplicate Filename Search");
-                    // ui.style_mut().spacing.indent = 5.0;
+              
                     ui.horizontal(|ui| {
                         ui.add_space(24.0);
                         ui.checkbox(&mut self.group.search, "Group Duplicate Filename Search by: ");
-                        if let Some(group) = &mut self.group.option {
-                        
+                        if let Some(group) = &mut self.group.option {              
                             // ui.radio_value(&mut self.group, GroupBy::Show, "Show");
                             // ui.radio_value(&mut self.group, GroupBy::Library, "Library");
                             // ui.radio_value(&mut self.group, GroupBy::Other, "Other: ");
-                            egui::ComboBox::from_label(" ")
-                                .selected_text(format!("{}", group))
-                                .show_ui(ui, |ui| {
-                                    for col in &self.group.list {
-                                        ui.selectable_value(group, col.to_string(), format!("{col}"));
-                                    }
-                            });
+                            combo_box(ui, "group", group, &self.group.list);
+                           
                         }
                         
                     });
@@ -362,34 +358,7 @@ impl eframe::App for TemplateApp {
                     ui.horizontal(|_| {});
                     ui.checkbox(&mut self.tags.search, "Search for Records with AudioSuite Tags");
 
-                    //SMALL TAG EDITOR
 
-                    // ui.horizontal(|ui| {
-                    //     ui.add_space(24.0);
-                    //     if ui.button("Add Tag:").clicked {
-                    //         self.tags.sort_by_key(|s| s.to_lowercase());
-                    //         if self.new_tag.len() > 0 {
-                    //             self.tags.push(self.new_tag.clone());
-                    //             self.new_tag = "".to_string();
-                    //     }}
-                    //     ui.text_edit_singleline(&mut self.new_tag);    
-                    // });
-                    //     ui.horizontal(|ui| {
-                    //         ui.add_space(24.0);
-                    //         if let Some(tag_ref) = &mut self.tags.option {
-                    //             if ui.button("Remove Tag").clicked {
-                    //                 self.tags.retain(|s| s != tag_ref);
-                    //                 tag_ref.clear();
-                    //             }
-                    //             egui::ComboBox::from_label("")
-                    //             .selected_text(format!("{}", tag_ref))
-                    //             .show_ui(ui, |ui| {
-                    //                 for tag in &self.tags {
-                    //                     ui.selectable_value(tag_ref, tag.to_string(), format!("{tag}"));
-                    //                 }
-                    //             });
-                    //         }
-                    //     });
                         ui.horizontal(|ui| {
                             ui.add_space(24.0);
                             ui.label("Filenames with Common Protools AudioSuite Tags will be marked for removal")
@@ -403,11 +372,11 @@ impl eframe::App for TemplateApp {
                         }
 
                         
-                        // ui.text_edit_singleline(&mut self.compare_db_path);
-                        if ui.button("Select DB").clicked() {
-                            self.compare_db.option = open_db();
+                        button(ui, "Select DB", ||{self.compare_db.option = open_db();});
+                        // if ui.button("Select DB").clicked() {
+                        //     self.compare_db.option = open_db();
                                 
-                        }
+                        // }
                     });
                    
                     ui.horizontal(|ui| {
@@ -430,20 +399,7 @@ impl eframe::App for TemplateApp {
 
                 }
                 Panel::Order => {
-                    if self.help {
-                        ui.heading("Column in order of Priority and whether it should be DESCending or ASCending.");
-                        ui.label("These are SQL arguments and Google/ChatGPT can help you figure out how to compose them");
-                        ui.horizontal(|_|{});
-                        ui.heading("Examples:");
-                        ui.heading("CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC");
-                        ui.label("Records with 'Audio Files' in the path will be removed over something that does not have it");
-                        ui.horizontal(|_|{});
-                        ui.heading("CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC");
-                        ui.label("Records with 'LIBRARY' (not case sensitive) in the path will be kept over records without");
-                        ui.horizontal(|_|{});
-                        ui.heading("Rules at the top of the list are prioritized over those below");
-                        ui.separator();
-                    }
+                    if self.help {order_help(ui)}
                     
                     for (index, line) in self.main.list.iter_mut().enumerate() {
                         let checked = self.sel_line == Some(index);
@@ -452,40 +408,9 @@ impl eframe::App for TemplateApp {
                         }
                     }
                     ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("Up").clicked() {
-                            if let Some(index) = self.sel_line {
-                                if index > 0 {
-                                    self.sel_line = Some(index-1);
-                                    self.main.list.swap(index, index-1);
-                                }
-                            }
-                        }
-                        if ui.button("Down").clicked() {
-                            if let Some(index) = self.sel_line {
-                                if index < self.main.list.len() - 1 {
-                                    self.sel_line = Some(index+1);
-                                    self.main.list.swap(index, index+1);
-                                }
-                            }
-                        }
-                        if ui.button("Remove").clicked() {
-                            if let Some(index) = self.sel_line {
-                                self.main.list.remove(index);
-                                self.sel_line = None;
-                            }
-                        }
-                        
-                        
-                        if ui.button("Add Line:").clicked {
-                            
-                            if self.new_line.len() > 0 {
-                                self.main.list.insert(0, self.new_line.clone());
-                                self.new_line.clear();
-                        }}
-                        ui.text_edit_singleline(&mut self.new_line);    
-                        if ui.button("Help").clicked {self.help = !self.help}
-                    });
+
+                    order_toolbar(ui,self);
+
                     ui.separator();
                     if ui.button("Text Editor").clicked() {
                         self.order_text = self.main.list.join("\n");
@@ -495,20 +420,7 @@ impl eframe::App for TemplateApp {
                 }
 
                 Panel:: OrderText => {
-                    if self.help {
-                    ui.heading("Column in order of Priority and whether it should be DESCending or ASCending.");
-                    ui.label("These are SQL arguments and Google/ChatGPT can help you figure out how to compose them");
-                    ui.horizontal(|_|{});
-                    ui.heading("Examples:");
-                    ui.heading("CASE WHEN pathname LIKE '%Audio Files%' THEN 1 ELSE 0 END ASC");
-                    ui.label("Records with 'Audio Files' in the path will be removed over something that does not have it");
-                    ui.horizontal(|_|{});
-                    ui.heading("CASE WHEN pathname LIKE '%LIBRARY%' THEN 0 ELSE 1 END ASC");
-                    ui.label("Records with 'LIBRARY' (not case sensitive) in the path will be kept over records without");
-                    ui.horizontal(|_|{});
-                    ui.heading("Rules at the top of the list are prioritized over those below");
-                    ui.separator();
-                    }
+                    if self.help {order_help(ui)}
 
                     ui.columns(1, |columns| {
                         // columns[0].heading("Duplicate Filename Keeper Priority Order:");
@@ -596,9 +508,74 @@ impl eframe::App for TemplateApp {
     }
 }
 
+pub fn order_toolbar(ui: &mut egui::Ui, app: &mut TemplateApp) {
+    ui.horizontal(|ui| {
+        if ui.button("Up").clicked() {
+            if let Some(index) = app.sel_line {
+                if index > 0 {
+                    app.sel_line = Some(index-1);
+                    app.main.list.swap(index, index-1);
+                }
+            }
+        }
+        if ui.button("Down").clicked() {
+            if let Some(index) = app.sel_line {
+                if index < app.main.list.len() - 1 {
+                    app.sel_line = Some(index+1);
+                    app.main.list.swap(index, index+1);
+                }
+            }
+        }
+        if ui.button("Remove").clicked() {
+            if let Some(index) = app.sel_line {
+                app.main.list.remove(index);
+                app.sel_line = None;
+            }
+        }            
+        if ui.button("Add Line:").clicked {
+            
+            if app.new_line.len() > 0 {
+                app.main.list.insert(0, app.new_line.clone());
+                app.new_line.clear();
+        }}
+        ui.text_edit_singleline(&mut app.new_line);    
+        if ui.button("Help").clicked {app.help = !app.help}
+    });
+}
+
+
+fn smreplace(ui: &mut egui::Ui, app: &mut TemplateApp) -> Result<(), rusqlite::Error> {
+    if let Some(db_path) = &app.main.option {
+        let db_name = db_path.split('/').last().unwrap();
+        let conn = Connection::open(db_path)?; 
+        let table = "justinmetadata";
+        let mut proceed = false;
+        
+        let search_query = format!("SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?1", table, app.column);
+        let mut stmt = conn.prepare(search_query.as_str())?;
+        let count: usize = stmt.query_row([format!("%{}%", app.find)], |row| row.get(0))?;
+    
+        ui.label(format!("Found {} records matching '{}' in {} of SM database: {}", count, app.find, app.column, db_name));
+    
+        ui.label(format!("Replace with '{}'?", app.replace));
+        ui.heading(format!("This is NOT undoable!"));
+        ui.horizontal(|ui| {
+            button(ui, "Proceed", ||proceed=true);
+            button(ui, "Canel", ||proceed = false);
+        });
+      
+        if proceed {
+            println!("Replacing '{}' with '{}' in {} of SM database: {}", app.find, app.replace, app.column, db_name);
+            let replace_query = format!("UPDATE {} SET {} = REPLACE({}, '{}', '{}') WHERE {} LIKE '%{}%'", table, app.column, app.column, app.find, app.replace, app.column, app.find);
+            conn.execute(replace_query.as_str(), [])?;
+        }
+    }
+    Ok(())
+
+}
+
 fn gather_dupicates() {}
 fn remove_dupicates() {}
-fn smreplace() {}
 
 fn open_db() -> Option<String> {
     if let Some(path) = rfd::FileDialog::new().pick_file() {
