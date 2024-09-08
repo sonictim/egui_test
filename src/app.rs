@@ -364,12 +364,9 @@ impl eframe::App for TemplateApp {
                 }
                 let db = &self.db.clone().unwrap();
                 ui.horizontal(|_| {});
-                let mut db_name = "";
+               
                 ui.vertical_centered(|ui| {
-                    // if let Some(path) = &self.db {
-                    //     db_name = path.split('/').last().unwrap();
-                    //     ui.heading(RichText::new(path.split('/').last().unwrap()).size(24.0).strong().extra_letter_spacing(5.0));
-                    // }
+         
                     ui.heading(RichText::new(&db.name).size(24.0).strong().extra_letter_spacing(5.0));
                     ui.label(format!("{} records", &db.size));
                     
@@ -423,21 +420,21 @@ impl eframe::App for TemplateApp {
                         //     self.count = smreplace_get(path.clone(), &mut self.find,  &mut self.column);
 
                         // }
-                        ui.label(format!("Found {} records matching '{}' in {} of SM database: {}", self.count, self.find, self.column, db_name));
+                        ui.label(format!("Found {} records matching '{}' in {} of SM database: {}", self.count, self.find, self.column, db.name));
                         if self.count == 0 {return;}
                         ui.label(format!("Replace with '{}'?", self.replace));
                         ui.label(format!("This is NOT undoable"));
                         ui.separator();
                         ui.horizontal(|ui| {
 
-                            if ui.button("Proceed").clicked() {
-                                if let Some(path) = &self.db {
-                                    &mut self.rt.block_on(async{
-                                        smreplace_process(&path.pool, &mut self.find, &mut self.replace, &mut self.column, self.dirty).await;
-                                    });
-                                }
-                                self.replace_safety = false;
-                            }
+                            // if ui.button("Proceed").clicked() {
+                            //     if let Some(path) = &self.db {
+                            //         &mut self.rt.block_on(async{
+                            //             smreplace_process(&path.pool, &mut self.find, &mut self.replace, &mut self.column, self.dirty).await;
+                            //         });
+                            //     }
+                            //     self.replace_safety = false;
+                            // }
                             if ui.button("Cancel").clicked() {
                                 self.count = 0;
                                 self.replace_safety = false;
