@@ -148,7 +148,7 @@ pub async fn open_db() -> Option<Database> {
         let db_path = path.display().to_string();
         if db_path.ends_with(".sqlite") {
             println!("Opening Database {}", db_path);
-            let db = Database::new(db_path).await;
+            let db = Database::open(db_path).await;
             return Some(db);
         }
     }    

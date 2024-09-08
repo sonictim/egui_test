@@ -77,10 +77,13 @@ pub struct Database {
 }
 
 impl Database {
-    pub async fn new(db_path: String) -> Self {
+    pub async fn open(db_path: String) -> Self {
         let db_pool = SqlitePool::connect(&db_path).await.expect("Pool opens fine");
+        println!("Get pool {:#?}", db_pool);
         let db_size = get_db_size(&db_pool).await.expect("get db size");
+        println!("Size: {}", db_size);
         let db_columns = get_columns(&db_pool).await.expect("get columns");
+        println!("Columns: {}", db_columns.len());
         Self {
             path: db_path.clone(),
             pool: db_pool,
@@ -90,6 +93,7 @@ impl Database {
         }
     }
 }
+
 
 
 #[derive(Hash, Eq, PartialEq, Clone, Debug,)]
@@ -110,8 +114,14 @@ pub struct TemplateApp {
     #[serde(skip)]
     rx: Option<mpsc::Receiver<Database>>,
     #[serde(skip)]
+    c_tx: Option<mpsc::Sender<Database>>,
+    #[serde(skip)]
+    c_rx: Option<mpsc::Receiver<Database>>,
+    #[serde(skip)]
     db: Option<Database>,
-    total_records: usize,
+    #[serde(skip)]
+    c_db: Option<Database>,
+    // total_records: usize,
 
     column: String,
     find: String,
@@ -161,12 +171,16 @@ enum Panel { Duplicates, Order, OrderText, Tags, Find }
 impl Default for TemplateApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel(1);
+        let (c_tx, c_rx) = mpsc::channel(1);
         let mut app = Self {
             rt: tokio::runtime::Runtime::new().unwrap(),
             tx: Some(tx),
             rx: Some(rx),
+            c_tx: Some(c_tx),
+            c_rx: Some(c_rx),
             db: None,
-            total_records: 0,
+            c_db: None,
+            // total_records: 0,
             column: "Filepath".to_owned(),
             find: String::new(),
             replace: String::new(),
@@ -264,8 +278,12 @@ impl eframe::App for TemplateApp {
                         if ui.button("Open Database").clicked() {
                             ui.close_menu();
                             
-                            let _ = &mut self.rt.block_on(async{
-                                self.db = open_db().await; 
+                            let tx = self.tx.clone().expect("tx channel exists");
+                            tokio::spawn(async move {
+                                let db = open_db().await.unwrap();
+                                if let Err(_) = tx.send(db).await {
+                                    eprintln!("Failed to send db");
+                                }
                             });
                         }
                         if ui.button("Close Database").clicked() {ui.close_menu(); self.db = None;}
@@ -344,6 +362,7 @@ impl eframe::App for TemplateApp {
                     });
                     return; // Return early if database is not loaded
                 }
+                let db = &self.db.clone().unwrap();
                 ui.horizontal(|_| {});
                 let mut db_name = "";
                 ui.vertical_centered(|ui| {
@@ -351,8 +370,8 @@ impl eframe::App for TemplateApp {
                     //     db_name = path.split('/').last().unwrap();
                     //     ui.heading(RichText::new(path.split('/').last().unwrap()).size(24.0).strong().extra_letter_spacing(5.0));
                     // }
-                    ui.heading(RichText::new(self.db.clone().expect("heading from db.name").name).size(24.0).strong().extra_letter_spacing(5.0));
-                    ui.label(format!("{} records", self.total_records));
+                    ui.heading(RichText::new(&db.name).size(24.0).strong().extra_letter_spacing(5.0));
+                    ui.label(format!("{} records", &db.size));
                     
                 });
                 ui.horizontal(|_| {});
@@ -388,14 +407,14 @@ impl eframe::App for TemplateApp {
                         return;
                     }
                     if ui.button("Process").clicked() {
-                        if let Some(path) = &self.db {
-                            self.replace_safety = true;
-                            &mut self.rt.block_on(async{
-                                self.count = smreplace_get(&self.db.clone().expect("pool from db.clone @ smreplace_get").pool, &mut self.find,  &mut self.column).await.expect("smreplace_get");
+                        // if let Some(path) = &self.db {
+                        //     self.replace_safety = true;
+                        //     &mut self.rt.block_on(async{
+                        //         self.count = smreplace_get(&self.db.clone().expect("pool from db.clone @ smreplace_get").pool, &mut self.find,  &mut self.column).await.expect("smreplace_get");
 
-                            });
+                        //     });
 
-                        }
+                        // }
                         
                         
                     }
@@ -493,21 +512,29 @@ impl eframe::App for TemplateApp {
                     //COMPARE COMPARE COMPARE COMPARE
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.compare_db.search, "Compare against database: ");
-                        // if let Some(path) = &self.compare_db.option {
-                        //     ui.label(path.split('/').last().unwrap());
-                        // }
+                        if let Some(cdb) = &self.c_db {
+                            ui.label(&cdb.name);
+                        }
 
                         
-                        // button(ui, "Select DB", ||{
-                        //     rt.block_on(async{
 
-                        //         self.compare_db.option = open_db().await.unwrap();
-                        //     });
-                        // });
-                        // if ui.button("Select DB").clicked() {
-                        //     self.compare_db.option = open_db();
+
+                        if ui.button("Select DB").clicked() {
+                           let tx = self.c_tx.clone().expect("tx channel exists");
+                            tokio::spawn(async move {
+                                let db = open_db().await.unwrap();
+                                if let Err(_) = tx.send(db).await {
+                                    eprintln!("Failed to send db");
+                                }
+                            });
                                 
-                        // }
+                        }
+                        if let Some(rx) = self.c_rx.as_mut() {
+                            if let Ok(db) = rx.try_recv() {
+                                self.c_db = Some(db);
+                            }
+                        }
+
                     });
                    
                         ui.horizontal(|ui| {
