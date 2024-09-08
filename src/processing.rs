@@ -1,5 +1,6 @@
 #![allow(non_snake_case)]
-use rusqlite::{Connection, Result};
+use sqlx::{sqlite::SqlitePool, Row};
+use tokio;
 use std::collections::HashSet;
 // use std::collections::HashMap;
 use std::env;
@@ -15,14 +16,15 @@ use crate::app::*;
 
 const TABLE: &str = "justinmetadata";
 
-pub fn smreplace_get(db_path: String, find: &mut String, column: &mut String ) -> usize {
-    let conn: Connection = Connection::open(db_path).unwrap(); 
+pub async fn smreplace_get(pool: &SqlitePool, find: &mut String, column: &mut String ) -> Result<usize, sqlx::Error>  {
+    
+    let search_query = format!("SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?", TABLE, column);
+    let result: (i64,) = sqlx::query_as(&search_query)
+        .bind(format!("%{}%", find))
+        .fetch_one(pool)
+        .await?;
 
-    let search_query = format!("SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?1", TABLE, column);
-    // Prepare the SQL query with the search text
-    let stmt = conn.prepare(search_query.as_str()).ok();
-    let count = stmt.expect("Failed to prepare statement").query_row([format!("%{}%", find)], |row| row.get(0)).unwrap();
-    count
+    Ok(result.0 as usize)
 }
 
 // pub async fn smreplace_get(db_path: &str, find: &str, column: &str) -> Result<usize, sqlx::Error> {
@@ -48,25 +50,29 @@ pub fn smreplace_get(db_path: String, find: &mut String, column: &mut String ) -
 //     Ok(usize::from_str(&count.to_string()).unwrap())
 // }
 
-pub fn smreplace_process(db_path: String, find: &mut String, replace: &mut String, column: &mut String, dirty: bool ) {
-    let conn: Connection = Connection::open(db_path).unwrap(); 
-    let dirty_text = if dirty { ", _Dirty = 1" } else { "" };
+pub async fn smreplace_process(pool: &SqlitePool, find: &mut String, replace: &mut String, column: &mut String, dirty: bool ) {
    
-    let replace_query = format!("UPDATE {} SET {} = REPLACE({}, '{}', '{}'){} WHERE {} LIKE '%{}%'", TABLE, column, column, find, replace, dirty_text, column, find);
-    conn.execute(replace_query.as_str(), []).ok();
+    let dirty_text = if dirty { ", _Dirty = 1" } else { "" };
+
+    let replace_query = format!(
+        "UPDATE {} SET {} = REPLACE({}, '{}', '{}'){} WHERE {} LIKE '%{}%'", 
+        TABLE, column, column, find, replace, dirty_text, column, find
+    );
+    sqlx::query(&replace_query).execute(pool).await;
 
 }
 
 
 pub fn gather_duplicates(main: &mut Config, group: &mut Config, deep: &mut Config, tags: &mut Config, compare: &mut Config) {
-    let mut source_db_path = String::new();
-    if let Some(path) = &main.option {
-        source_db_path = path.clone();
-    }
-    let source_db_name = source_db_path.split('/').last().unwrap();
+    todo!();
+    // let mut source_db_path = String::new();
+    // if let Some(path) = &main.option {
+    //     source_db_path = path.clone();
+    // }
+    // let source_db_name = source_db_path.split('/').last().unwrap();
 
-    main.status = format!("Opening {}", source_db_name);
-    let mut conn = Connection::open(&source_db_path).unwrap(); 
+    // main.status = format!("Opening {}", source_db_name);
+    // let mut conn = Connection::open(&source_db_path).unwrap(); 
 
     // if main.search {
     //     main.working = true;
@@ -82,15 +88,15 @@ pub fn gather_duplicates(main: &mut Config, group: &mut Config, deep: &mut Confi
     //     deep.working = false;
     // }
 
-    if tags.search {
-        main.status = format!("Searching for tags");
-        tags.working = true;
-        tags.status = format!{"Found {} records with matching tags", tags.records.len()};
-        gather_filenames_with_tags(&mut conn, tags).ok();
-        tags.working = false;
-        tags.status = format!{"Found {} records with matching tags", tags.records.len()};
-        main.records.extend(tags.records.clone());
-    }
+    // if tags.search {
+    //     main.status = format!("Searching for tags");
+    //     tags.working = true;
+    //     tags.status = format!{"Found {} records with matching tags", tags.records.len()};
+    //     gather_filenames_with_tags(&mut conn, tags).ok();
+    //     tags.working = false;
+    //     tags.status = format!{"Found {} records with matching tags", tags.records.len()};
+    //     main.records.extend(tags.records.clone());
+    // }
     
 
     // if let Some(compare_db_path) = config.compare_db {
@@ -101,75 +107,98 @@ pub fn gather_duplicates(main: &mut Config, group: &mut Config, deep: &mut Confi
 
 
 
-    if main.records.is_empty() {
-        main.status = format!("No records marked for removal.");
+    // if main.records.is_empty() {
+    //     main.status = format!("No records marked for removal.");
        
-    }
+    // }
 
-    main.status = format!("Marked {} total records for removal.", main.records.len());
+    // main.status = format!("Marked {} total records for removal.", main.records.len());
 
 }
 
-pub fn gather_filenames_with_tags(conn: &mut Connection, tags: &mut Config) -> Result<()> {
-    // tags.status = format!("Searching for filenames containing tags");
-    // let mut file_records = HashSet::new();
+// pub fn gather_filenames_with_tags(conn: &mut Connection, tags: &mut Config) -> Result<()> {
+//     // tags.status = format!("Searching for filenames containing tags");
+//     // let mut file_records = HashSet::new();
 
-    for tag in &tags.list {
-        let query = format!("SELECT rowid, filename, duration FROM justinmetadata WHERE filename LIKE '%' || ? || '%'");
-        let mut stmt = conn.prepare(&query)?;
-        let rows = stmt.query_map([tag.clone()], |row| {
-            Ok(FileRecord {
-                id: row.get(0)?,
-                filename: row.get(1)?,
-                duration: row.get(2)?,
-            })
-        })?;
+//     for tag in &tags.list {
+//         let query = format!("SELECT rowid, filename, duration FROM justinmetadata WHERE filename LIKE '%' || ? || '%'");
+//         let mut stmt = conn.prepare(&query)?;
+//         let rows = stmt.query_map([tag.clone()], |row| {
+//             Ok(FileRecord {
+//                 id: row.get(0)?,
+//                 filename: row.get(1)?,
+//                 duration: row.get(2)?,
+//             })
+//         })?;
 
-        for file_record in rows {
-            let file_record = file_record?;
-            tags.records.insert(file_record);
-        }
-    }
-    // tags.records = file_records;
-    Ok(())
-    // tags.status = format!("{} total records containing tags marked for deletion", tags.records.len());
-}
+//         for file_record in rows {
+//             let file_record = file_record?;
+//             tags.records.insert(file_record);
+//         }
+//     }
+//     // tags.records = file_records;
+//     Ok(())
+//     // tags.status = format!("{} total records containing tags marked for deletion", tags.records.len());
+// }
 
 pub fn remove_duplicates() {}
 
-pub fn open_db() -> Option<String> {
+pub async fn open_db() -> Option<Database> {
     if let Some(path) = rfd::FileDialog::new().pick_file() {
         let db_path = path.display().to_string();
-        if db_path.ends_with(".sqlite") {return Some(db_path);}
+        if db_path.ends_with(".sqlite") {
+            println!("Opening Database {}", db_path);
+            let db = Database::new(db_path).await;
+            return Some(db);
+        }
     }    
     None
 }
+// pub async fn open_db2() -> Option<Database> {
 
-pub fn get_db_size(db_path: String) -> usize {
-    let conn = Connection::open(db_path).unwrap();
-     let count: usize = conn.query_row(
-         "SELECT COUNT(*) FROM justinmetadata",
-         [],
-         |row| row.get(0) 
-     ).unwrap();
-     count
+//     if let Some(path) = rfd::FileDialog::new().pick_file() {
+//         let db_path = path.display().to_string();
+//         if db_path.ends_with(".sqlite") {
+//             let db = Database::new(db_path).await;
+            
+//             return Some(db);}
+
+//     }    
+//     None
+// }
+
+// pub async fn get_pool(db_path: String) -> Option<SqlitePool> {
+//     Some(SqlitePool::connect(&db_path).await)
+// }
+
+pub async fn get_db_size(pool: &SqlitePool) -> Result<usize, sqlx::Error> {
+    let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM justinmetadata")
+        .fetch_one(pool)
+        .await?;
+
+    Ok(count.0 as usize)
 }
 
-pub fn get_columns(db_path: String) -> Vec<String> {
-    let conn = Connection::open(db_path).unwrap();
-    let mut stmt = conn.prepare("PRAGMA table_info(justinmetadata);").unwrap();
+pub async fn get_columns(pool: &SqlitePool) -> Result<Vec<String>, sqlx::Error> {
+    // Query for table info using PRAGMA
+    let columns = sqlx::query("PRAGMA table_info(justinmetadata);")
+        .fetch_all(pool)
+        .await?
+        .into_iter()
+        .filter_map(|row| {
+            let column_name: String = row.try_get("name").ok()?; // Extract "name" column
+            if !column_name.starts_with('_') {
+                Some(column_name)
+            } else {
+                None
+            }
+        })
+        .collect::<Vec<String>>();
 
-    // Execute the query and collect the column names into a Vec<String>
-    let mut column_names: Vec<String> = stmt.query_map([], |row| {
-        Ok(row.get::<_, String>(1)?) // The 1st index corresponds to the "name" column
-    }).unwrap()
-    .filter_map(Result::ok) // Filter out any errors
-    .filter(|c| !c.starts_with("_"))
-    .collect();
-
-
-    column_names.sort();
-    column_names
+    // Sort the column names
+    let mut sorted_columns = columns;
+    sorted_columns.sort();
+    Ok(sorted_columns)
 }
 
 pub fn default_tags() -> Vec<String> {

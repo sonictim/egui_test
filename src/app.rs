@@ -1,10 +1,16 @@
 // use std::ops::DerefMut;
 // use egui::RadioButton;
 use eframe::egui::{self, FontId, RichText, TextStyle, WidgetText};
+use sqlx::{sqlite::SqlitePool, Row};
+use tokio;
+use tokio::runtime::Runtime;
+use tokio::sync::mpsc;
+use std::sync::Arc;
+use std::sync::Mutex;
 
 use eframe::glow::BLUE;
 use egui::{menu::menu_button, ModifierNames};
-use rusqlite::{Connection, Result};
+// use rusqlite::{Connection, Result};
 use std::collections::HashSet;
 use std::collections::HashMap;
 use std::env;
@@ -61,6 +67,31 @@ impl Config {
     
 }
 
+#[derive(Clone)]
+pub struct Database {
+    pub path: String,
+    pub pool: SqlitePool,
+    pub name: String,
+    pub size: usize,
+    pub columns: Vec<String>,
+}
+
+impl Database {
+    pub async fn new(db_path: String) -> Self {
+        let db_pool = SqlitePool::connect(&db_path).await.expect("Pool opens fine");
+        let db_size = get_db_size(&db_pool).await.expect("get db size");
+        let db_columns = get_columns(&db_pool).await.expect("get columns");
+        Self {
+            path: db_path.clone(),
+            pool: db_pool,
+            name: db_path.split('/').last().expect("Name From Pathname").to_string(),
+            size: db_size,
+            columns: db_columns,
+        }
+    }
+}
+
+
 #[derive(Hash, Eq, PartialEq, Clone, Debug,)]
 pub struct FileRecord {
     pub id: usize,
@@ -72,6 +103,14 @@ pub struct FileRecord {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
+    #[serde(skip)]
+    rt: tokio::runtime::Runtime,
+    #[serde(skip)]
+    tx: Option<mpsc::Sender<Database>>,
+    #[serde(skip)]
+    rx: Option<mpsc::Receiver<Database>>,
+    #[serde(skip)]
+    db: Option<Database>,
     total_records: usize,
 
     column: String,
@@ -82,7 +121,6 @@ pub struct TemplateApp {
     main: Config,
     group: Config,
     group_null: bool,
-
     tags: Config,
     deep: Config,
     compare_db: Config,
@@ -122,8 +160,12 @@ enum Panel { Duplicates, Order, OrderText, Tags, Find }
 
 impl Default for TemplateApp {
     fn default() -> Self {
+        let (tx, rx) = mpsc::channel(1);
         let mut app = Self {
-
+            rt: tokio::runtime::Runtime::new().unwrap(),
+            tx: Some(tx),
+            rx: Some(rx),
+            db: None,
             total_records: 0,
             column: "Filepath".to_owned(),
             find: String::new(),
@@ -171,25 +213,29 @@ impl TemplateApp {
 
         Default::default()
     }
-    fn reset_to_defaults(&mut self, db_path: Option<String>) {
+    fn reset_to_defaults(&mut self, db: Option<Database>) {
         *self = Self::default();
-        self.main.option = db_path;
-        if let Some(path) = self.main.option.clone() {
-            self.total_records = get_db_size(path.clone());
-            self.group.list = get_columns(path.clone());
-        }
+        self.db = db;
+       
+        
     }
-    fn reset_to_TJFdefaults(&mut self, db_path: Option<String>) {
+    fn reset_to_TJFdefaults(&mut self, db: Option<Database>) {
         *self = Self::default();
-        self.main.option = db_path;
+        self.db = db;
         self.main.list = tjf_order();
         self.tags.list = tjf_tags();
-        self.tags.list = tjf_tags();
-        if let Some(path) = self.main.option.clone() {
-            self.total_records = get_db_size(path.clone());
-            self.group.list = get_columns(path.clone());
-        }
+        // self.open_pool().await;
+       
+        //     if let Some(pool) = &self.pool {
+        //         self.total_records = get_db_size(&pool).await.unwrap();
+        //         self.group.list = get_columns(&pool).await.unwrap();
+
+        //     }
+        
     }
+
+
+
 }
 
 
@@ -202,6 +248,7 @@ impl eframe::App for TemplateApp {
 
     /// Called each time the UI needs repainting, which may be many times per second.
     fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+
         // Put your widgets into a `SidePanel`, `TopBottomPanel`, `CentralPanel`, `Window` or `Area`.
         // For inspiration and more examples, go to https://emilk.github.io/egui
         
@@ -216,31 +263,30 @@ impl eframe::App for TemplateApp {
                     ui.menu_button("File", |ui| {
                         if ui.button("Open Database").clicked() {
                             ui.close_menu();
-                            self.main.option = open_db();
-                            if let Some(path) = self.main.option.clone() {
-                                self.total_records = get_db_size(path.clone());
-                                self.group.list = get_columns(path.clone());
-                            }
+                            
+                            let _ = &mut self.rt.block_on(async{
+                                self.db = open_db().await; 
+                            });
                         }
-                        if ui.button("Close Database").clicked() {ui.close_menu(); self.main.option = None;}
+                        if ui.button("Close Database").clicked() {ui.close_menu(); self.db = None;}
                         ui.separator();
-                        if ui.button("Restore Defaults").clicked() {ui.close_menu(); self.reset_to_defaults(self.main.option.clone())}
+                        if ui.button("Restore Defaults").clicked() {
+                            ui.close_menu(); 
+                            self.reset_to_defaults(self.db.clone())
+                          
+                        }
                         if  ui.input(|i| i.modifiers.alt ) {
-                            if ui.button("TJF Defaults").clicked() {ui.close_menu(); self.reset_to_TJFdefaults(self.main.option.clone())}
+                            if ui.button("TJF Defaults").clicked() {
+                                ui.close_menu();
+                                self.reset_to_TJFdefaults(self.db.clone())
+                            }
                         }
                         ui.separator();
                         if ui.button("Quit").clicked() {
                             ctx.send_viewport_cmd(egui::ViewportCommand::Close);
                         }
                     });
-                    // ui.add_space(16.0);
-                    // ui.menu_button("Run", |ui| {
-                    //     if ui.button("Search For Duplicates").clicked() {}
-                    //     if ui.button("Search and Remove Duplicates").clicked() {}
-                    //     // if ui.button("Open").clicked() {}
-                        
-                    // });
-                    // ui.add_space(16.0);
+              
                     ui.menu_button("View", |ui| {
                         if ui.button("Duplicates Search").clicked() {ui.close_menu(); self.my_panel = Panel::Duplicates}
                         if ui.button("Find & Replace").clicked() {ui.close_menu(); self.my_panel = Panel::Find}
@@ -249,30 +295,24 @@ impl eframe::App for TemplateApp {
                         if ui.button("Tag Editor").clicked() {ui.close_menu(); self.my_panel = Panel::Tags}
 
                     });
-                    // ui.menu_button("View", |ui| {
-                    //     if ui.button("Duplicates Search").clicked() {ui.close_menu(); self.my_panel = Panel::Duplicates}
-                    //     if ui.button("Find & Replace Text").clicked() {ui.close_menu(); self.my_panel = Panel::Find}
-                        
-                    // });
-
-                    // ui.add_space(16.0);
+               
                     ui.with_layout(egui::Layout::right_to_left(egui::Align::Min), |ui| {
 
                         egui::widgets::global_dark_light_mode_buttons(ui);
                     });
-                    // ui.add_space(48.0);
-                    egui::menu::bar(ui, |ui| {
+                  
+                    // egui::menu::bar(ui, |ui| {
                         
-                        ui.selectable_value(&mut self.my_panel, Panel::Duplicates, RichText::new("Duplicate Filename Search"),);
+                    //     ui.selectable_value(&mut self.my_panel, Panel::Duplicates, RichText::new("Duplicate Filename Search"),);
                         
-                        ui.add_space(16.0);
-                        // ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
-                        // ui.add_space(16.0);
-                        // ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
-                        ui.selectable_value(&mut self.my_panel, Panel::Find, "Find and Replace",);
-                        ui.add_space(16.0);
+                    //     ui.add_space(16.0);
+                    //     // ui.selectable_value(&mut self.my_panel, Panel::Order, "Adjust Search Order Config",);
+                    //     // ui.add_space(16.0);
+                    //     // ui.selectable_value(&mut self.my_panel, Panel::Tags, "Manage Audiosuite Tags",);
+                    //     ui.selectable_value(&mut self.my_panel, Panel::Find, "Find and Replace",);
+                    //     ui.add_space(16.0);
     
-                    });
+                    // });
                 }
                 
                
@@ -285,27 +325,33 @@ impl eframe::App for TemplateApp {
     // The central panel the region left after adding TopPanel's and SidePanel's
             
             egui::CentralPanel::default().show(ctx, |ui| {
-                if self.main.option.is_none() {
-                    // ui.horizontal_centered(|ui| {
-                        ui.vertical_centered(|ui| {
-                            if ui.add_sized([200.0, 50.0], egui::Button::new(RichText::new("Open Database").size(24.0).strong())).clicked() {
-                                self.main.option = open_db();
-                                if let Some(path) = self.main.option.clone() {
-                                    self.total_records = get_db_size(path.clone());
-                                    self.group.list = get_columns(path.clone());
+                if let Some(rx) = self.rx.as_mut() {
+                    if let Ok(db) = rx.try_recv() {
+                        self.db = Some(db);
+                    }
+                }
+                if self.db.is_none() {
+                    ui.vertical_centered(|ui| {
+                        if ui.add_sized([200.0, 50.0], egui::Button::new(RichText::new("Open Database").size(24.0).strong())).clicked() {
+                            let tx = self.tx.clone().expect("tx channel exists");
+                            tokio::spawn(async move {
+                                let db = open_db().await.unwrap();
+                                if let Err(_) = tx.send(db).await {
+                                    eprintln!("Failed to send db");
                                 }
-                            } 
-                        });
-       
-                    return;
+                            });
+                        }
+                    });
+                    return; // Return early if database is not loaded
                 }
                 ui.horizontal(|_| {});
                 let mut db_name = "";
                 ui.vertical_centered(|ui| {
-                    if let Some(path) = &self.main.option {
-                        db_name = path.split('/').last().unwrap();
-                        ui.heading(RichText::new(path.split('/').last().unwrap()).size(24.0).strong().extra_letter_spacing(5.0));
-                    }
+                    // if let Some(path) = &self.db {
+                    //     db_name = path.split('/').last().unwrap();
+                    //     ui.heading(RichText::new(path.split('/').last().unwrap()).size(24.0).strong().extra_letter_spacing(5.0));
+                    // }
+                    ui.heading(RichText::new(self.db.clone().expect("heading from db.name").name).size(24.0).strong().extra_letter_spacing(5.0));
                     ui.label(format!("{} records", self.total_records));
                     
                 });
@@ -342,16 +388,19 @@ impl eframe::App for TemplateApp {
                         return;
                     }
                     if ui.button("Process").clicked() {
-                        if let Some(path) = &self.main.option {
+                        if let Some(path) = &self.db {
                             self.replace_safety = true;
-                            self.count = smreplace_get(path.clone(), &mut self.find,  &mut self.column);
+                            &mut self.rt.block_on(async{
+                                self.count = smreplace_get(&self.db.clone().expect("pool from db.clone @ smreplace_get").pool, &mut self.find,  &mut self.column).await.expect("smreplace_get");
+
+                            });
 
                         }
                         
                         
                     }
                     if self.replace_safety {
-                        // if let Some(path) = &self.main.option {
+                        // if let Some(path) = &self.db {
                         //     self.count = smreplace_get(path.clone(), &mut self.find,  &mut self.column);
 
                         // }
@@ -363,8 +412,10 @@ impl eframe::App for TemplateApp {
                         ui.horizontal(|ui| {
 
                             if ui.button("Proceed").clicked() {
-                                if let Some(path) = &self.main.option {
-                                    smreplace_process(path.clone(), &mut self.find, &mut self.replace, &mut self.column, self.dirty);
+                                if let Some(path) = &self.db {
+                                    &mut self.rt.block_on(async{
+                                        smreplace_process(&path.pool, &mut self.find, &mut self.replace, &mut self.column, self.dirty).await;
+                                    });
                                 }
                                 self.replace_safety = false;
                             }
@@ -442,12 +493,17 @@ impl eframe::App for TemplateApp {
                     //COMPARE COMPARE COMPARE COMPARE
                     ui.horizontal(|ui| {
                         ui.checkbox(&mut self.compare_db.search, "Compare against database: ");
-                        if let Some(path) = &self.compare_db.option {
-                            ui.label(path.split('/').last().unwrap());
-                        }
+                        // if let Some(path) = &self.compare_db.option {
+                        //     ui.label(path.split('/').last().unwrap());
+                        // }
 
                         
-                        button(ui, "Select DB", ||{self.compare_db.option = open_db();});
+                        // button(ui, "Select DB", ||{
+                        //     rt.block_on(async{
+
+                        //         self.compare_db.option = open_db().await.unwrap();
+                        //     });
+                        // });
                         // if ui.button("Select DB").clicked() {
                         //     self.compare_db.option = open_db();
                                 
@@ -500,7 +556,7 @@ impl eframe::App for TemplateApp {
                     }
 
                     // if self.gather_dupes {
-                    //     let source_db_path = self.main.option.as_ref().unwrap().clone();
+                    //     let source_db_path = self.db.as_ref().unwrap().clone();
                     //     let mut conn = Connection::open(&source_db_path).unwrap();
 
                     //     if self.tags.search {
