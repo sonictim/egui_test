@@ -228,14 +228,40 @@ impl TemplateApp {
         Default::default()
     }
     fn reset_to_defaults(&mut self, db: Option<Database>) {
-        *self = Self::default();
-        self.db = db;
-       
-        
+        self.c_db = None;
+        // total_records: 0,
+        self.column = "Filepath".to_owned();
+        self.find = String::new();
+        self.replace = String::new();
+        self.dirty = true;
+        self.main = Config::new(true);
+        self.group = Config::new_option(false, "Show");
+        self.group_null = false;
+ 
+        self.tags = Config::new_option(false, "-");
+        self.deep = Config::new(false);
+        self.compare_db = Config::new(false);
+
+        self.safe = true;
+        self.dupes_db = false;
+        self.my_panel = Panel::Duplicates;
+        self.new_tag = String::new();
+        self.sel_tags = Vec::new();
+        self.new_line = String::new();
+        self.sel_line = None;
+        self.order_text = String::new();
+        self.help = false;
+        self.replace_safety = false;
+        self.count = 0;
+        self.gather_dupes = false;
+
+        self.main.list = default_order();
+        self.tags.list = default_tags();
     }
+        
     fn reset_to_TJFdefaults(&mut self, db: Option<Database>) {
-        *self = Self::default();
-        self.db = db;
+        // *self = Self::default();
+        // self.db = db;
         self.main.list = tjf_order();
         self.tags.list = tjf_tags();
         // self.open_pool().await;
