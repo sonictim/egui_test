@@ -27,29 +27,6 @@ pub async fn smreplace_get(pool: &SqlitePool, find: &mut String, column: &mut St
     Ok(result.0 as usize)
 }
 
-// pub async fn smreplace_get(db_path: &str, find: &str, column: &str) -> Result<usize, sqlx::Error> {
-//     // Create a connection pool
-//     let pool = SqlitePool::connect(db_path).await?;
-
-//     // Create the search query using column
-//     let search_query = format!(
-//         "SELECT COUNT(rowid) FROM {} WHERE {} LIKE ?",
-//         TABLE, column
-//     );
-
-//     // Execute the query and get the result
-//     let row = sqlx::query(&search_query)
-//         .bind(format!("%{}%", find)) // Bind the search text
-//         .fetch_one(&pool)
-//         .await?;
-
-//     // Extract the count from the first column
-//     let count: i64 = row.get(0);
-
-//     // Convert to usize
-//     Ok(usize::from_str(&count.to_string()).unwrap())
-// }
-
 pub async fn smreplace_process(pool: &SqlitePool, find: &mut String, replace: &mut String, column: &mut String, dirty: bool ) {
    
     let dirty_text = if dirty { ", _Dirty = 1" } else { "" };
@@ -58,88 +35,117 @@ pub async fn smreplace_process(pool: &SqlitePool, find: &mut String, replace: &m
         "UPDATE {} SET {} = REPLACE({}, '{}', '{}'){} WHERE {} LIKE '%{}%'", 
         TABLE, column, column, find, replace, dirty_text, column, find
     );
-    sqlx::query(&replace_query).execute(pool).await;
+    let _ = sqlx::query(&replace_query).execute(pool).await;
 
 }
 
-
-pub fn gather_duplicates(main: &mut Config, group: &mut Config, deep: &mut Config, tags: &mut Config, compare: &mut Config) {
-    todo!();
-    // let mut source_db_path = String::new();
-    // if let Some(path) = &main.option {
-    //     source_db_path = path.clone();
-    // }
-    // let source_db_name = source_db_path.split('/').last().unwrap();
-
-    // main.status = format!("Opening {}", source_db_name);
-    // let mut conn = Connection::open(&source_db_path).unwrap(); 
-
-    // if main.search {
-    //     main.working = true;
-    //     group.records = gather_duplicate_filenames_in_database(&mut conn, &config.group_sort, config.group_null, config.verbose)?;
-    //     main.records.extend(group.records);
-    //     main.working = false;
-    // }
-
-    // if deep.search {
-    //     deep.working = true;
-    //     deep.records = gather_records_with_trailing_numbers(&mut conn, total_records)?;
-    //     main.records.extend(deep.records);
-    //     deep.working = false;
-    // }
-
-    // if tags.search {
-    //     main.status = format!("Searching for tags");
-    //     tags.working = true;
-    //     tags.status = format!{"Found {} records with matching tags", tags.records.len()};
-    //     gather_filenames_with_tags(&mut conn, tags).ok();
-    //     tags.working = false;
-    //     tags.status = format!{"Found {} records with matching tags", tags.records.len()};
-    //     main.records.extend(tags.records.clone());
-    // }
+pub async fn gather_duplicate_filenames_in_database(
+    pool: &SqlitePool, 
+    order: Vec<String>, 
+    group_sort: &Option<String>, 
+    group_null: bool, 
+    verbose: bool
+) -> Result<HashSet<FileRecord>, sqlx::Error> {
     
+    let mut file_records = HashSet::new();
 
-    // if let Some(compare_db_path) = config.compare_db {
-    //     let compare_conn = Connection::open(&compare_db_path)?; 
-    //     let ids_from_compare_db = gather_compare_database_overlaps(&conn, &compare_conn)?;
-    //     main.records.extend(ids_from_compare_db);
-    // }
+    // Construct the ORDER BY clause dynamically
+    let order_clause = order.join(", ");
 
+    // Build the SQL query based on whether a group_sort is provided
+    let (partition_by, where_clause) = match group_sort {
+        Some(group) => {
+            if verbose {
+                println!("Grouping duplicate record search by {}", group);
+            }
+            let where_clause = if group_null {
+                if verbose {
+                    println!("Records without a {} entry will be processed together.", group);
+                }
+                String::new()
+            } else {
+                if verbose {
+                    println!("Records without a {} entry will be skipped.", group);
+                }
+                format!("WHERE {} IS NOT NULL AND {} != ''", group, group)
+            };
+            (format!("{}, filename", group), where_clause)
+        }
+        None => ("filename".to_string(), String::new()),
+    };
+    
+    let sql = format!(
+        "
+        WITH ranked AS (
+            SELECT
+                rowid AS id,
+                filename,
+                duration,
+                ROW_NUMBER() OVER (
+                    PARTITION BY {}
+                    ORDER BY {}
+                ) as rn
+            FROM justinmetadata
+            {}
+        )
+        SELECT id, filename, duration FROM ranked WHERE rn > 1
+        ",
+        partition_by, order_clause, where_clause
+    );
 
+    // Execute the query and fetch the results
+    let rows = sqlx::query(&sql)
+        .fetch_all(pool)
+        .await?;
+    
+    // Iterate through the rows and insert them into the hashset
+    for row in rows {
+        let id: u32 = row.get(0);
+        let file_record = FileRecord {
+            id: id as usize,
+            filename: row.get(1),
+            duration: row.try_get(2).unwrap_or("".to_string()),  // Handle possible NULL in duration
+        };
+        file_records.insert(file_record);
+    }
 
-    // if main.records.is_empty() {
-    //     main.status = format!("No records marked for removal.");
-       
-    // }
+    if verbose {
+        println!("Marked {} duplicate records for deletion.", file_records.len());
+    }
 
-    // main.status = format!("Marked {} total records for removal.", main.records.len());
-
+    Ok(file_records)
 }
 
-// pub fn gather_filenames_with_tags(conn: &mut Connection, tags: &mut Config) -> Result<()> {
-//     // tags.status = format!("Searching for filenames containing tags");
-//     // let mut file_records = HashSet::new();
+    pub async fn gather_filenames_with_tags(pool: &SqlitePool, tags: &Vec<String>) -> Result<HashSet<FileRecord>, sqlx::Error>  {
+        // tags.status = format!("Searching for filenames containing tags");
+        println!("Tokio Start");
+        let mut file_records = HashSet::new();
 
-//     for tag in &tags.list {
-//         let query = format!("SELECT rowid, filename, duration FROM justinmetadata WHERE filename LIKE '%' || ? || '%'");
-//         let mut stmt = conn.prepare(&query)?;
-//         let rows = stmt.query_map([tag.clone()], |row| {
-//             Ok(FileRecord {
-//                 id: row.get(0)?,
-//                 filename: row.get(1)?,
-//                 duration: row.get(2)?,
-//             })
-//         })?;
+        for tag in tags {
+            let query = "SELECT rowid, filename, duration FROM justinmetadata WHERE filename LIKE '%' || ? || '%'";
+    
+            // Execute the query and fetch rows
+            let rows = sqlx::query(query)
+                .bind(tag.clone())
+                .fetch_all(pool)
+                .await?;
+    
+            // Collect file records from the query result
+            for row in rows {
+                let id: u32 = row.get(0);
+                let file_record = FileRecord {
+                    id: id as usize,
+                    filename: row.get(1),
+                    duration: row.try_get(2).unwrap_or("".to_string()),  // Handle possible NULL in duration
+                };
+                file_records.insert(file_record);
+            }
+        }
+        println!("Found Tags");
+        Ok(file_records)
+        // tags.status = format!("{} total records containing tags marked for deletion", tags.records.len());
+    }
 
-//         for file_record in rows {
-//             let file_record = file_record?;
-//             tags.records.insert(file_record);
-//         }
-//     }
-//     // tags.records = file_records;
-//     Ok(())
-//     // tags.status = format!("{} total records containing tags marked for deletion", tags.records.len());
-// }
 
 pub fn remove_duplicates() {}
 
@@ -154,22 +160,6 @@ pub async fn open_db() -> Option<Database> {
     }    
     None
 }
-// pub async fn open_db2() -> Option<Database> {
-
-//     if let Some(path) = rfd::FileDialog::new().pick_file() {
-//         let db_path = path.display().to_string();
-//         if db_path.ends_with(".sqlite") {
-//             let db = Database::new(db_path).await;
-            
-//             return Some(db);}
-
-//     }    
-//     None
-// }
-
-// pub async fn get_pool(db_path: String) -> Option<SqlitePool> {
-//     Some(SqlitePool::connect(&db_path).await)
-// }
 
 pub async fn get_db_size(pool: &SqlitePool) -> Result<usize, sqlx::Error> {
     let count: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM justinmetadata")

@@ -1,6 +1,7 @@
 // use std::ops::DerefMut;
 // use egui::RadioButton;
 use eframe::egui::{self, FontId, RichText, TextStyle, WidgetText};
+use sqlx::database;
 use sqlx::{sqlite::SqlitePool, Row};
 use tokio;
 use tokio::runtime::Runtime;
@@ -31,36 +32,53 @@ use serde::Deserialize;
 #[serde(default)] 
 pub struct Config {
     pub search: bool,
-    pub option: Option<String>,
+    #[serde(skip)]
+    // pub db: Database,
+    // pub option: Option<String>,
     pub list: Vec<String>,
+    pub selected: String,
     #[serde(skip)]
     pub status: String,
     #[serde(skip)]
     pub records: HashSet<FileRecord>,
     #[serde(skip)]
     pub working: bool,
+    #[serde(skip)]
+    tx: Option<mpsc::Sender<HashSet<FileRecord>>>,
+    #[serde(skip)]
+    rx: Option<mpsc::Receiver<HashSet<FileRecord>>>,
 }
 
 impl Config {
     fn new(on: bool) -> Self {
+        let (tx, rx) = mpsc::channel(1);
         Self {
             search: on,
-            option: None,
+            // option: None,
+            // db: None,
             list: Vec::new(),
+            selected: String::new(),
             status: String::new(),
             records: HashSet::new(),
             working: false,
+            tx: Some(tx),
+            rx: Some(rx),
 
         }
     }
     fn new_option(on: bool, o: &str) -> Self {
+        let (tx, rx) = mpsc::channel(1);
         Self {
             search: on,
+            // db: None,
             list: Vec::new(),
-            option: Some(o.to_string()),
+            selected: o.to_string(),
+            // option: Some(o.to_string()),
             status: String::new(),
             records: HashSet::new(),
             working: false,
+            tx: Some(tx),
+            rx: Some(rx),
 
         }
     }
@@ -79,11 +97,11 @@ pub struct Database {
 impl Database {
     pub async fn open(db_path: String) -> Self {
         let db_pool = SqlitePool::connect(&db_path).await.expect("Pool opens fine");
-        println!("Get pool {:#?}", db_pool);
+        // println!("Get pool {:#?}", db_pool);
         let db_size = get_db_size(&db_pool).await.expect("get db size");
-        println!("Size: {}", db_size);
+        // println!("Size: {}", db_size);
         let db_columns = get_columns(&db_pool).await.expect("get columns");
-        println!("Columns: {}", db_columns.len());
+        // println!("Columns: {}", db_columns.len());
         Self {
             path: db_path.clone(),
             pool: db_pool,
@@ -117,6 +135,14 @@ pub struct TemplateApp {
     c_tx: Option<mpsc::Sender<Database>>,
     #[serde(skip)]
     c_rx: Option<mpsc::Receiver<Database>>,
+    #[serde(skip)]
+    find_tx: Option<mpsc::Sender<usize>>,
+    #[serde(skip)]
+    find_rx: Option<mpsc::Receiver<usize>>,
+    #[serde(skip)]
+    replace_tx: Option<mpsc::Sender<HashSet<FileRecord>>>,
+    #[serde(skip)]
+    replace_rx: Option<mpsc::Receiver<HashSet<FileRecord>>>,
     #[serde(skip)]
     db: Option<Database>,
     #[serde(skip)]
@@ -172,12 +198,18 @@ impl Default for TemplateApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel(1);
         let (c_tx, c_rx) = mpsc::channel(1);
+        let (find_tx, find_rx) = mpsc::channel(1);
+        let (replace_tx, replace_rx) = mpsc::channel(1);
         let mut app = Self {
             rt: tokio::runtime::Runtime::new().unwrap(),
             tx: Some(tx),
             rx: Some(rx),
             c_tx: Some(c_tx),
             c_rx: Some(c_rx),
+            find_tx: Some(find_tx),
+            find_rx: Some(find_rx),
+            replace_tx: Some(replace_tx),
+            replace_rx: Some(replace_rx),
             db: None,
             c_db: None,
             // total_records: 0,
@@ -308,7 +340,7 @@ impl eframe::App for TemplateApp {
                             tokio::spawn(async move {
                                 let db = open_db().await.unwrap();
                                 if let Err(_) = tx.send(db).await {
-                                    eprintln!("Failed to send db");
+                                    // eprintln!("Failed to send db");
                                 }
                             });
                         }
@@ -381,358 +413,353 @@ impl eframe::App for TemplateApp {
                             tokio::spawn(async move {
                                 let db = open_db().await.unwrap();
                                 if let Err(_) = tx.send(db).await {
-                                    eprintln!("Failed to send db");
+                                    // eprintln!("Failed to send db");
                                 }
                             });
                         }
                     });
                     return; // Return early if database is not loaded
                 }
-                let db = &self.db.clone().unwrap();
-                ui.horizontal(|_| {});
-               
-                ui.vertical_centered(|ui| {
-         
-                    ui.heading(RichText::new(&db.name).size(24.0).strong().extra_letter_spacing(5.0));
-                    ui.label(format!("{} records", &db.size));
-                    
-                });
-                ui.horizontal(|_| {});
-                ui.separator();
-                ui.horizontal(|_| {});
-
-
-            match self.my_panel {
-                Panel::Find => {
-                    ui.heading("Find and Replace");
-                    ui.label("Note: Search is Case Sensitive");
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        ui.label("Find Text: ");
-                        ui.text_edit_singleline(&mut self.find);
-                        
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("Replace: ");
-                        ui.add_space(8.0);
-                        ui.text_edit_singleline(&mut self.replace);
-                    });
-                    ui.horizontal(|ui| {
-                        ui.label("in Column: ");
-                        combo_box(ui, "find_column", &mut self.column, &self.group.list);
-                    });
-                    ui.separator();
-                    ui.checkbox(&mut self.dirty,"Mark Records as Dirty?");
-                    ui.label("Dirty Records are audio files with metadata that is not embedded");
-                    ui.separator();
-        
-                    if self.find.is_empty() {
-                        return;
-                    }
-                    if ui.button("Process").clicked() {
-                        // if let Some(path) = &self.db {
-                        //     self.replace_safety = true;
-                        //     &mut self.rt.block_on(async{
-                        //         self.count = smreplace_get(&self.db.clone().expect("pool from db.clone @ smreplace_get").pool, &mut self.find,  &mut self.column).await.expect("smreplace_get");
-
-                        //     });
-
-                        // }
-                        
-                        
-                    }
-                    if self.replace_safety {
-                        // if let Some(path) = &self.db {
-                        //     self.count = smreplace_get(path.clone(), &mut self.find,  &mut self.column);
-
-                        // }
-                        ui.label(format!("Found {} records matching '{}' in {} of SM database: {}", self.count, self.find, self.column, db.name));
-                        if self.count == 0 {return;}
-                        ui.label(format!("Replace with '{}'?", self.replace));
-                        ui.label(format!("This is NOT undoable"));
-                        ui.separator();
-                        ui.horizontal(|ui| {
-
-                            // if ui.button("Proceed").clicked() {
-                            //     if let Some(path) = &self.db {
-                            //         &mut self.rt.block_on(async{
-                            //             smreplace_process(&path.pool, &mut self.find, &mut self.replace, &mut self.column, self.dirty).await;
-                            //         });
-                            //     }
-                            //     self.replace_safety = false;
-                            // }
-                            if ui.button("Cancel").clicked() {
-                                self.count = 0;
-                                self.replace_safety = false;
-                            }
-                        });
-                    }
-                    else if self.count > 0 {
-                        ui.label(format!("{} records replaced", self.count));
-                    }
-                        
-                }
-                Panel::Duplicates => {
-                    ui.heading("Search for Duplicate Records");
-        
-                    ui.checkbox(&mut self.main.search, "Basic Duplicate Filename Search");
-                        
-                        //GROUP GROUP GROUP GROUP
-                        ui.horizontal(|ui| {
-                            ui.add_space(24.0);
-                            ui.checkbox(&mut self.group.search, "Group Duplicate Filename Search by: ");
-                            if let Some(group) = &mut self.group.option {              
-                                // ui.radio_value(&mut self.group, GroupBy::Show, "Show");
-                                // ui.radio_value(&mut self.group, GroupBy::Library, "Library");
-                                // ui.radio_value(&mut self.group, GroupBy::Other, "Other: ");
-                                combo_box(ui, "group", group, &self.group.list);
-                            
-                            }
-                            
-                        });
-                        ui.horizontal(|ui| {
-                            ui.add_space(44.0);
-                            ui.label("Records without group entry: ");
-                            ui.radio_value(&mut self.group_null, false, "Skip/Ignore");
-                            ui.radio_value(&mut self.group_null, true, "Process Together");
-                            // ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
-                        });
-                        ui.horizontal( |ui| {
-                            if self.group.working {ui.spinner();}
-                            ui.label(self.group.status.clone());
-
-                        });
-
-                        //DEEP DIVE DEEP DIVE DEEP DIVE
-                        ui.checkbox(&mut self.deep.search, "Deep Dive Duplicates Search (Slow)");
-                        ui.horizontal( |ui| {
-                            ui.add_space(24.0);
-                            ui.label("Filenames ending in .#, .#.#.#, or .M will be examined as possible duplicates");
-                        });
-                        ui.horizontal( |ui| {
-                            if self.deep.working {ui.spinner();}
-                            ui.label(self.deep.status.clone());
-
-                        });
-                        ui.separator();
-
-                    //TAGS TAGS TAGS TAGS
-                    ui.checkbox(&mut self.tags.search, "Search for Records with AudioSuite Tags");
-
-
-                        ui.horizontal(|ui| {
-                            ui.add_space(24.0);
-                            ui.label("Filenames with Common Protools AudioSuite Tags will be marked for removal")
-                        });
-                        
-                        ui.horizontal(|ui| {
-                            if self.tags.working {ui.spinner();}
-                            ui.label(self.tags.status.clone());
-
-                        });
-                        ui.separator();
-
-                    //COMPARE COMPARE COMPARE COMPARE
-                    ui.horizontal(|ui| {
-                        ui.checkbox(&mut self.compare_db.search, "Compare against database: ");
-                        if let Some(cdb) = &self.c_db {
-                            ui.label(&cdb.name);
-                        }
-
-                        
-
-
-                        if ui.button("Select DB").clicked() {
-                           let tx = self.c_tx.clone().expect("tx channel exists");
-                            tokio::spawn(async move {
-                                let db = open_db().await.unwrap();
-                                if let Err(_) = tx.send(db).await {
-                                    eprintln!("Failed to send db");
-                                }
-                            });
-                                
-                        }
-                        if let Some(rx) = self.c_rx.as_mut() {
-                            if let Ok(db) = rx.try_recv() {
-                                self.c_db = Some(db);
-                            }
-                        }
-
-                    });
-                   
-                        ui.horizontal(|ui| {
-                            ui.add_space(24.0);
-                            ui.label("Filenames from Target Database found in Comparison Database will be Marked for Removal");
-                        });
-                        ui.label(self.compare_db.status.clone());
-                        ui.separator();
-
+                if let Some(db)  = &self.db {
                     ui.horizontal(|_| {});
-                    ui.checkbox(&mut self.safe, "Create Safety Database of Thinned Records");
-                    ui.checkbox(&mut self.dupes_db, "Create Database of Duplicate Records");
-                    ui.separator();
-
-                    ui.horizontal( |ui| {});
-                    
-                    ui.horizontal(|ui| {
-                        if  ui.input(|i| i.modifiers.alt ) {
-                            if ui.button("Search and Remove Duplicates").clicked() {}
-                        } else {
-                            if ui.button("Search for Duplicates").clicked() {
-                                // self.gather_dupes = true;
-                                gather_duplicates(&mut self.main, &mut self.group, &mut self.deep, &mut self.tags, &mut self.compare_db);
-                            }
-
-                        }
-                        if self.main.records.len() > 0 {
-
-                            // button(ui, "Remove Duplicates", remove_duplicates);
-
-                            if ui.button("Remove Duplicates").clicked() {
-                                remove_duplicates();
-                            }
-                        }
+                
+                    ui.vertical_centered(|ui| {
+            
+                        ui.heading(RichText::new(&db.name).size(24.0).strong().extra_letter_spacing(5.0));
+                        ui.label(format!("{} records", &db.size));
+                        
                     });
-                    ui.horizontal( |ui| {
-                        if self.main.working {ui.spinner();}
-                        ui.label(self.main.status.clone());
-
-                    });
-                    if self.main.working{
-                        ui.add( egui::ProgressBar::new(0.0)
-                                // .text("progress")
-                                .desired_height(4.0)
-                            );
-                    }
-
-                    // if self.gather_dupes {
-                    //     let source_db_path = self.db.as_ref().unwrap().clone();
-                    //     let mut conn = Connection::open(&source_db_path).unwrap();
-
-                    //     if self.tags.search {
-                    //         self.tags.working = true;
-                    //         self.tags.status = format!{"Found {} records with matching tags", self.tags.records.len()};
-                    //         gather_filenames_with_tags(&mut conn, &mut self.tags).ok();
-                    //         self.tags.status = format!{"Found {} records with matching tags", self.tags.records.len()};
-                    //         self.main.records.extend(self.tags.records.clone());
-                    //         self.tags.working = false;
-                    //     }
-
-
-
-                    //     self.gather_dupes = false;
-                    // }
-
-
-                }
-                Panel::Order => {
-                    if self.help {order_help(ui)}
-                    
-                    for (index, line) in self.main.list.iter_mut().enumerate() {
-                        let checked = self.sel_line == Some(index);
-                        if ui.selectable_label(checked, line.clone()).clicked {
-                            self.sel_line = if checked { None } else { Some(index) };
-                        }
-                    }
+                    ui.horizontal(|_| {});
                     ui.separator();
+                    ui.horizontal(|_| {});
 
-                    order_toolbar(ui,self);
 
-                    ui.separator();
-                    if ui.button("Text Editor").clicked() {
-                        self.order_text = self.main.list.join("\n");
-                        self.my_panel = Panel::OrderText;
-                    }
-                    
-                }
-
-                Panel:: OrderText => {
-                    if self.help {order_help(ui)}
-
-                    ui.columns(1, |columns| {
-                        // columns[0].heading("Duplicate Filename Keeper Priority Order:");
-                        columns[0].text_edit_multiline(&mut self.order_text);
-                    });
-                    ui.separator();
-                    if ui.button("Save").clicked() {
-                        self.main.list = self.order_text.lines().map(|s| s.to_string()).collect();
-                        self.my_panel = Panel::Order;
-                    }
-                }
-
-                Panel::Tags => {
-                    ui.heading("Tag Editor");
-                    ui.label("Protools Audiosuite Tags use the following format:  -example_");
-                    ui.label("You can enter any string of text and if it is a match, the file will be marked for removal");
-                    
-                    ui.separator();
-                    let num_columns = 6;
-                    egui::ScrollArea::vertical().show(ui, |ui| {
-                        egui::Grid::new("Tags Grid")
-                        .num_columns(num_columns)
-                        .spacing([20.0, 8.0])
-                        .striped(true)
-                        .show(ui, |ui| {
-                            for (index, tag) in self.tags.list.iter_mut().enumerate() {
-                                // Check if current index is in `sel_tags`
-                                let is_selected = self.sel_tags.contains(&index);
+                    match self.my_panel {
+                        Panel::Find => {
+                            ui.heading("Find and Replace");
+                            ui.label("Note: Search is Case Sensitive");
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                ui.label("Find Text: ");
+                                ui.text_edit_singleline(&mut self.find);
                                 
-                                if ui.selectable_label(is_selected, tag.clone()).clicked() {
-                                    if is_selected {
-                                        // Deselect
-                                        self.sel_tags.retain(|&i| i != index);
-                                    } else {
-                                        // Select
-                                        self.sel_tags.push(index);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("Replace: ");
+                                ui.add_space(8.0);
+                                ui.text_edit_singleline(&mut self.replace);
+                            });
+                            ui.horizontal(|ui| {
+                                ui.label("in Column: ");
+                                combo_box(ui, "find_column", &mut self.column, &db.columns);
+                            });
+                            ui.separator();
+                            ui.checkbox(&mut self.dirty,"Mark Records as Dirty?");
+                            ui.label("Dirty Records are audio files with metadata that is not embedded");
+                            ui.separator();
+                
+                            if self.find.is_empty() {
+                                return;
+                            }
+                            if ui.button("Search").clicked() {
+                                self.replace_safety = true;
+                             
+                                let tx = self.find_tx.clone().expect("tx channel exists");
+                                let pool = db.pool.clone();
+                                let mut find = self.find.clone();
+                                let mut column = self.column.clone();
+                                tokio::spawn(async move {
+                                    let count = smreplace_get(&pool, &mut find, &mut column).await.unwrap();
+                                    if let Err(_) = tx.send(count).await {
+                                        // eprintln!("Failed to send db");
+                                    }
+                                });
+                                
+                                
+                            }
+                            if let Some(rx) = self.find_rx.as_mut() {
+                                if let Ok(count) = rx.try_recv() {
+                                    self.count = count;
+                                }
+                            }
+                            if self.replace_safety {
+                                // if let Some(path) = &self.db {
+                                //     self.count = smreplace_get(path.clone(), &mut self.find,  &mut self.column);
+
+                                // }
+                                ui.label(format!("Found {} records matching '{}' in {} of SM database: {}", self.count, self.find, self.column, db.name));
+                                if self.count == 0 {return;}
+                                ui.label(format!("Replace with \"{}\" ?", self.replace));
+                                ui.label(format!("This is NOT undoable"));
+                                ui.separator();
+                                ui.horizontal(|ui| {
+
+                                    if ui.button("Proceed").clicked() {
+                                        // let tx = self.find_tx.clone().expect("tx channel exists");
+                                        let pool = db.pool.clone();
+                                        let mut find = self.find.clone();
+                                        let mut replace = self.replace.clone();
+                                        let mut column = self.column.clone();
+                                        let dirty = self.dirty;
+                                        tokio::spawn(async move {
+                                            smreplace_process(&pool, &mut find, &mut replace, &mut column, dirty).await;
+                                            // if let Err(_) = tx.send(count).await {
+                                            //     eprintln!("Failed to send db");
+                                            // }
+                                        });
+                                        self.replace_safety = false;
+                                    }
+                                    if ui.button("Cancel").clicked() {
+                                        self.count = 0;
+                                        self.replace_safety = false;
+                                    }
+                                });
+                            }
+                            else if self.count > 0 {
+                                ui.label(format!("{} records replaced", self.count));
+                            }
+                                
+                        }
+                        Panel::Duplicates => {
+                            ui.heading("Search for Duplicate Records");
+                
+                            ui.checkbox(&mut self.main.search, "Basic Duplicate Filename Search");
+                                
+                                //GROUP GROUP GROUP GROUP
+                                ui.horizontal(|ui| {
+                                    ui.add_space(24.0);
+                                    ui.checkbox(&mut self.group.search, "Group Duplicate Filename Search by: ");
+                                    combo_box(ui, "group", &mut self.group.selected, &db.columns);
+                                    
+                                    
+                                });
+                                ui.horizontal(|ui| {
+                                    ui.add_space(44.0);
+                                    ui.label("Records without group entry: ");
+                                    ui.radio_value(&mut self.group_null, false, "Skip/Ignore");
+                                    ui.radio_value(&mut self.group_null, true, "Process Together");
+                                    // ui.checkbox(&mut self.group_null, "Process records without defined group together, or skip?");
+                                });
+                                ui.horizontal( |ui| {
+                                    if self.group.working {ui.spinner();}
+                                    ui.label(self.group.status.clone());
+
+                                });
+                                ui.separator();
+                                //DEEP DIVE DEEP DIVE DEEP DIVE
+                                ui.checkbox(&mut self.deep.search, "Deep Dive Duplicates Search (Slow)");
+                                ui.horizontal( |ui| {
+                                    ui.add_space(24.0);
+                                    ui.label("Filenames ending in .#, .#.#.#, or .M will be examined as possible duplicates");
+                                });
+                                ui.horizontal( |ui| {
+                                    if self.deep.working {ui.spinner();}
+                                    ui.label(self.deep.status.clone());
+
+                                });
+                                ui.separator();
+
+                            //TAGS TAGS TAGS TAGS
+                            ui.checkbox(&mut self.tags.search, "Search for Records with AudioSuite Tags");
+
+
+                                ui.horizontal(|ui| {
+                                    ui.add_space(24.0);
+                                    ui.label("Filenames with Common Protools AudioSuite Tags will be marked for removal")
+                                });
+                                
+                                ui.horizontal(|ui| {
+                                    if self.tags.working {ui.spinner();}
+                                    ui.label(self.tags.status.clone());
+
+                                });
+                                ui.separator();
+
+                            //COMPARE COMPARE COMPARE COMPARE
+                            ui.horizontal(|ui| {
+                                ui.checkbox(&mut self.compare_db.search, "Compare against database: ");
+                                if let Some(cdb) = &self.c_db {
+                                    ui.label(&cdb.name);
+                                }
+
+                                
+
+
+                                if ui.button("Select DB").clicked() {
+                                let tx = self.c_tx.clone().expect("tx channel exists");
+                                    tokio::spawn(async move {
+                                        let db = open_db().await.unwrap();
+                                        if let Err(_) = tx.send(db).await {
+                                            // eprintln!("Failed to send db");
+                                        }
+                                    });
+                                        
+                                }
+                                if let Some(rx) = self.c_rx.as_mut() {
+                                    if let Ok(db) = rx.try_recv() {
+                                        self.c_db = Some(db);
                                     }
                                 }
-                                
-                                if (index + 1) % num_columns == 0 {
-                                    ui.end_row(); // Move to the next row after 4 columns
+
+                            });
+                        
+                                ui.horizontal(|ui| {
+                                    ui.add_space(24.0);
+                                    ui.label("Filenames from Target Database found in Comparison Database will be Marked for Removal");
+                                });
+                                ui.label(self.compare_db.status.clone());
+                                ui.separator();
+
+                            ui.horizontal(|_| {});
+                            ui.checkbox(&mut self.safe, "Create Safety Database of Thinned Records");
+                            ui.checkbox(&mut self.dupes_db, "Create Database of Duplicate Records");
+                            ui.separator();
+
+                            ui.horizontal( |ui| {});
+                            
+                            ui.horizontal(|ui| {
+                                if  ui.input(|i| i.modifiers.alt ) {
+                                    if ui.button("Search and Remove Duplicates").clicked() {}
+                                } else {
+                                    if ui.button("Search for Duplicates").clicked() {
+                                        // self.gather_dupes = true;
+                                        gather_duplicates(self);
+                                    }
+
+                                }
+                                if self.main.records.len() > 0 {
+
+                                    // button(ui, "Remove Duplicates", remove_duplicates);
+
+                                    if ui.button("Remove Duplicates").clicked() {
+                                        remove_duplicates();
+                                    }
+                                }
+                            });
+                            ui.horizontal( |ui| {
+                                if self.main.working {ui.spinner();}
+                                ui.label(self.main.status.clone());
+
+                            });
+                            if self.main.working{
+                                ui.add( egui::ProgressBar::new(0.0)
+                                        // .text("progress")
+                                        .desired_height(4.0)
+                                    );
+                            }
+                            receive_duplicates(self);
+                            
+                        }
+                        Panel::Order => {
+                            if self.help {order_help(ui)}
+                            
+                            for (index, line) in self.main.list.iter_mut().enumerate() {
+                                let checked = self.sel_line == Some(index);
+                                if ui.selectable_label(checked, line.clone()).clicked {
+                                    self.sel_line = if checked { None } else { Some(index) };
                                 }
                             }
+                            ui.separator();
+
+                            order_toolbar(ui,self);
+
+                            ui.separator();
+                            if ui.button("Text Editor").clicked() {
+                                self.order_text = self.main.list.join("\n");
+                                self.my_panel = Panel::OrderText;
+                            }
                             
-                            // End the last row if not fully filled
-                            if self.tags.list.len() % 4 != 0 {
-                                ui.end_row();
-                            }
-                        });
-                    });
-                    ui.separator();
-                    ui.horizontal(|ui| {
-                        if ui.button("Add Tag:").clicked() && !self.new_tag.is_empty() {
+                        }
 
-                            self.tags.list.push(self.new_tag.clone());
-                            self.new_tag.clear(); // Clears the string      
-                            self.tags.list.sort_by_key(|s| s.to_lowercase());
-                        }
-                        ui.text_edit_singleline(&mut self.new_tag);
-                        
-                        
-                    });
-                    if ui.button("Remove Selected Tags").clicked() {
-                        // Sort and remove elements based on `sel_tags`
-                        let mut sorted_indices: Vec<usize> = self.sel_tags.clone();
-                        sorted_indices.sort_by(|a, b| b.cmp(a)); // Sort in reverse order
-                
-                        for index in sorted_indices {
-                            if index < self.tags.list.len() {
-                                self.tags.list.remove(index);
+                        Panel:: OrderText => {
+                            if self.help {order_help(ui)}
+
+                            ui.columns(1, |columns| {
+                                // columns[0].heading("Duplicate Filename Keeper Priority Order:");
+                                columns[0].text_edit_multiline(&mut self.order_text);
+                            });
+                            ui.separator();
+                            if ui.button("Save").clicked() {
+                                self.main.list = self.order_text.lines().map(|s| s.to_string()).collect();
+                                self.my_panel = Panel::Order;
                             }
                         }
-                
-                        // Clear the selection list after removal
-                        self.sel_tags.clear();
+
+                        Panel::Tags => {
+                            ui.heading("Tag Editor");
+                            ui.label("Protools Audiosuite Tags use the following format:  -example_");
+                            ui.label("You can enter any string of text and if it is a match, the file will be marked for removal");
+                            
+                            ui.separator();
+                            let num_columns = 6;
+                            egui::ScrollArea::vertical().show(ui, |ui| {
+                                egui::Grid::new("Tags Grid")
+                                .num_columns(num_columns)
+                                .spacing([20.0, 8.0])
+                                .striped(true)
+                                .show(ui, |ui| {
+                                    for (index, tag) in self.tags.list.iter_mut().enumerate() {
+                                        // Check if current index is in `sel_tags`
+                                        let is_selected = self.sel_tags.contains(&index);
+                                        
+                                        if ui.selectable_label(is_selected, tag.clone()).clicked() {
+                                            if is_selected {
+                                                // Deselect
+                                                self.sel_tags.retain(|&i| i != index);
+                                            } else {
+                                                // Select
+                                                self.sel_tags.push(index);
+                                            }
+                                        }
+                                        
+                                        if (index + 1) % num_columns == 0 {
+                                            ui.end_row(); // Move to the next row after 4 columns
+                                        }
+                                    }
+                                    
+                                    // End the last row if not fully filled
+                                    if self.tags.list.len() % 4 != 0 {
+                                        ui.end_row();
+                                    }
+                                });
+                            });
+                            ui.separator();
+                            ui.horizontal(|ui| {
+                                if ui.button("Add Tag:").clicked() && !self.new_tag.is_empty() {
+
+                                    self.tags.list.push(self.new_tag.clone());
+                                    self.new_tag.clear(); // Clears the string      
+                                    self.tags.list.sort_by_key(|s| s.to_lowercase());
+                                }
+                                ui.text_edit_singleline(&mut self.new_tag);
+                                
+                                
+                            });
+                            if ui.button("Remove Selected Tags").clicked() {
+                                // Sort and remove elements based on `sel_tags`
+                                let mut sorted_indices: Vec<usize> = self.sel_tags.clone();
+                                sorted_indices.sort_by(|a, b| b.cmp(a)); // Sort in reverse order
+                        
+                                for index in sorted_indices {
+                                    if index < self.tags.list.len() {
+                                        self.tags.list.remove(index);
+                                    }
+                                }
+                        
+                                // Clear the selection list after removal
+                                self.sel_tags.clear();
+                            }
+                        
+                        }
+
+
+
                     }
-                   
                 }
-
-
-
-            }
 
         });
     }
+    
 }
 
 pub fn order_toolbar(ui: &mut egui::Ui, app: &mut TemplateApp) {
@@ -770,3 +797,114 @@ pub fn order_toolbar(ui: &mut egui::Ui, app: &mut TemplateApp) {
     });
 }
 
+
+pub fn gather_duplicates(app: &mut TemplateApp) {
+    app.main.records.clear();
+    if let Some(db) = app.db.clone() {
+
+  
+    
+    let pool = db.pool;
+
+    //  app.main.status = format!("Opening {}", db.name);
+    // let mut conn = Connection::open(&source_db_path).unwrap(); 
+
+    if app.main.search {
+        app.main.status = format!("Searching for Dupicates");
+        app.group.working = true;
+        app.group.status = format!("Here we go!");
+        if let Some(tx) = app.group.tx.clone() {
+            let order = app.main.list.clone();
+            let mut group_sort = None;
+            if app.group.search {group_sort = Some(app.group.selected.clone())}
+            let group_null = app.group_null;
+            let p = pool.clone();
+            tokio::spawn(async move {
+                println!("tokio spawn main");
+                let results  = gather_duplicate_filenames_in_database(&p, order, &group_sort, group_null, true).await;
+                if let Err(_) = tx.send(results.expect("error on gather tags")).await {
+                    eprintln!("Failed to send db");
+                }
+            });
+        }
+  
+    }
+
+    // if deep.search {
+    //     deep.working = true;
+    //     deep.records = gather_records_with_trailing_numbers(&mut conn, total_records)?;
+    //     main.records.extend(deep.records);
+    //     deep.working = false;
+    // }
+
+    if app.tags.search {
+        app.main.status = format!("Searching for tags");
+        app.tags.working = true;
+        app.tags.status = format!{"Searching records with matching tags"};
+        if app.tags.tx.is_none() {println!("is none");}
+                            if let Some(tx) = app.tags.tx.clone() {
+                                println!("if let some");
+                                let tags = app.tags.list.clone();
+                                tokio::spawn(async move {
+                                    println!("tokio spawn tags");
+                                    let results  = gather_filenames_with_tags(&pool, &tags).await;
+                                    if let Err(_) = tx.send(results.expect("error on gather tags")).await {
+                                        eprintln!("Failed to send db");
+                                    }
+                                });
+
+                            }
+                            else {
+                                println!("no if let some");
+                            }
+                            
+                            
+
+    }
+    
+
+    // if let Some(compare_db_path) = config.compare_db {
+    //     let compare_conn = Connection::open(&compare_db_path)?; 
+    //     let ids_from_compare_db = gather_compare_database_overlaps(&conn, &compare_conn)?;
+    //     main.records.extend(ids_from_compare_db);
+    // }
+
+
+    
+}
+}
+
+fn receive_duplicates(app: &mut TemplateApp) {
+    if let Some(rx) = app.group.rx.as_mut() {
+        if let Ok(records) = rx.try_recv() {
+            app.group.records = records;
+            app.group.working = false;
+            app.group.status = format!{"Found {} duplicate records", app.group.records.len()};
+            app.main.records.extend(app.group.records.clone());
+        }
+    }
+    
+        if app.main.records.is_empty() {
+            app.main.status = format!("No records marked for removal.");
+           
+        } else {
+            app.main.status = format!("Marked {} total records for removal.", app.main.records.len());
+    
+        }
+    if let Some(rx) = app.tags.rx.as_mut() {
+        if let Ok(records) = rx.try_recv() {
+            app.tags.records = records;
+            app.tags.working = false;
+            app.tags.status = format!{"Found {} records with matching tags", app.tags.records.len()};
+            app.main.records.extend(app.tags.records.clone());
+        }
+    }
+    
+        if app.main.records.is_empty() {
+            app.main.status = format!("No records marked for removal.");
+           
+        } else {
+            app.main.status = format!("Marked {} total records for removal.", app.main.records.len());
+    
+        }
+}
