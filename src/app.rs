@@ -50,12 +50,26 @@ pub struct Config {
 }
 
 impl Config {
-    fn new(on: bool) -> Self {
+    fn default() -> Self {
         let (tx, rx) = mpsc::channel(1);
         Self {
+            search: false,
+            list: Vec::new(),
+            selected: String::new(),
+            status: String::new(),
+            records: HashSet::new(),
+            working: false,
+            tx: Some(tx),
+            rx: Some(rx),
+
+        }
+
+    }
+    fn new(on: bool) -> Self {
+        let (tx, rx) = mpsc::channel(1);
+        println!("Initializing new config with tx: {:?}, rx: {:?}", tx, rx);
+        Self {
             search: on,
-            // option: None,
-            // db: None,
             list: Vec::new(),
             selected: String::new(),
             status: String::new(),
@@ -68,12 +82,11 @@ impl Config {
     }
     fn new_option(on: bool, o: &str) -> Self {
         let (tx, rx) = mpsc::channel(1);
+        println!("Initializing new config with tx: {:?}, rx: {:?}", tx, rx);
         Self {
             search: on,
-            // db: None,
             list: Vec::new(),
             selected: o.to_string(),
-            // option: Some(o.to_string()),
             status: String::new(),
             records: HashSet::new(),
             working: false,
@@ -97,11 +110,8 @@ pub struct Database {
 impl Database {
     pub async fn open(db_path: String) -> Self {
         let db_pool = SqlitePool::connect(&db_path).await.expect("Pool opens fine");
-        // println!("Get pool {:#?}", db_pool);
         let db_size = get_db_size(&db_pool).await.expect("get db size");
-        // println!("Size: {}", db_size);
         let db_columns = get_columns(&db_pool).await.expect("get columns");
-        // println!("Columns: {}", db_columns.len());
         Self {
             path: db_path.clone(),
             pool: db_pool,
@@ -125,8 +135,8 @@ pub struct FileRecord {
 #[derive(serde::Deserialize, serde::Serialize)]
 #[serde(default)] // if we add new fields, give them default values when deserializing old state
 pub struct TemplateApp {
-    #[serde(skip)]
-    rt: tokio::runtime::Runtime,
+    // #[serde(skip)]
+    // rt: tokio::runtime::Runtime,
     #[serde(skip)]
     tx: Option<mpsc::Sender<Database>>,
     #[serde(skip)]
@@ -201,7 +211,7 @@ impl Default for TemplateApp {
         let (find_tx, find_rx) = mpsc::channel(1);
         let (replace_tx, replace_rx) = mpsc::channel(1);
         let mut app = Self {
-            rt: tokio::runtime::Runtime::new().unwrap(),
+            // rt: tokio::runtime::Runtime::new().unwrap(),
             tx: Some(tx),
             rx: Some(rx),
             c_tx: Some(c_tx),
@@ -260,56 +270,20 @@ impl TemplateApp {
         Default::default()
     }
     fn reset_to_defaults(&mut self, db: Option<Database>) {
-        self.c_db = None;
-        // total_records: 0,
-        self.column = "Filepath".to_owned();
-        self.find = String::new();
-        self.replace = String::new();
-        self.dirty = true;
-        self.main = Config::new(true);
-        self.group = Config::new_option(false, "Show");
-        self.group_null = false;
- 
-        self.tags = Config::new_option(false, "-");
-        self.deep = Config::new(false);
-        self.compare_db = Config::new(false);
-
-        self.safe = true;
-        self.dupes_db = false;
-        self.my_panel = Panel::Duplicates;
-        self.new_tag = String::new();
-        self.sel_tags = Vec::new();
-        self.new_line = String::new();
-        self.sel_line = None;
-        self.order_text = String::new();
-        self.help = false;
-        self.replace_safety = false;
-        self.count = 0;
-        self.gather_dupes = false;
-
-        self.main.list = default_order();
-        self.tags.list = default_tags();
+        *self = Self::default();
+        self.db = db;
     }
         
     fn reset_to_TJFdefaults(&mut self, db: Option<Database>) {
-        // *self = Self::default();
-        // self.db = db;
+        *self = Self::default();
+        self.db = db;
         self.main.list = tjf_order();
-        self.tags.list = tjf_tags();
-        // self.open_pool().await;
-       
-        //     if let Some(pool) = &self.pool {
-        //         self.total_records = get_db_size(&pool).await.unwrap();
-        //         self.group.list = get_columns(&pool).await.unwrap();
-
-        //     }
-        
+        self.tags.list = tjf_tags();        
     }
 
 
 
 }
-
 
 
 impl eframe::App for TemplateApp {
@@ -348,13 +322,13 @@ impl eframe::App for TemplateApp {
                         ui.separator();
                         if ui.button("Restore Defaults").clicked() {
                             ui.close_menu(); 
-                            self.reset_to_defaults(self.db.clone())
+                            self.reset_to_defaults(self.db.clone());
                           
                         }
                         if  ui.input(|i| i.modifiers.alt ) {
                             if ui.button("TJF Defaults").clicked() {
                                 ui.close_menu();
-                                self.reset_to_TJFdefaults(self.db.clone())
+                                self.reset_to_TJFdefaults(self.db.clone());
                             }
                         }
                         ui.separator();

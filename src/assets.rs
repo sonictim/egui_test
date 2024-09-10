@@ -16,7 +16,7 @@ pub fn large_button<F>(ui: &mut Ui, label: &str, action: F)
 where
     F: FnOnce(),
 {
-    if ui.add_sized([200.0, 50.0], egui::Button::new(RichText::new("Open Database").size(24.0).strong())).clicked() {
+    if ui.add_sized([200.0, 50.0], egui::Button::new(RichText::new(label).size(24.0).strong())).clicked() {
         action();
     } 
 }
